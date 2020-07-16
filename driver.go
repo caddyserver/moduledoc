@@ -224,10 +224,10 @@ func (d *Driver) LoadTypeByModuleID(moduleName string) (*Value, error) {
 	return val, nil
 }
 
-// GetAllModuleDocs returns a map of all module documentations,
-// keyed by the full module ID.
-func (d *Driver) GetAllModuleDocs() (map[string]string, error) {
-	return d.db.GetAllModuleDocs()
+// GetAllModules returns a map of all modules, keyed by the
+// full module ID.
+func (d *Driver) GetAllModules() (map[string]Value, error) {
+	return d.db.GetAllModules()
 }
 
 // CaddyModule represents a Caddy module.

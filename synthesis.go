@@ -80,10 +80,15 @@ func (ds *Driver) getPackage(packagePath, version string) (*packages.Package, er
 			packages.NeedImports |
 			packages.NeedTypes |
 			packages.NeedTypesInfo,
+
+		// on Linux, leaving CGO_ENABLED to the default value of 1 would
+		// cause an error: "could not import C (no metadata for C)", but
+		// only on Linux... on my Mac it worked fine either way
+		Env: append(os.Environ(), "CGO_ENABLED=0"),
 	}
 	pkgs, err := packages.Load(cfg, packagePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("packages.Load: %v", err)
 	}
 
 	// see if there are any errors in the import graph
