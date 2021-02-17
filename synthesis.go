@@ -62,15 +62,19 @@ func (ds *Driver) getPackage(packagePath, version string) (*packages.Package, er
 	if err != nil {
 		return nil, fmt.Errorf("exec %v: %v", cmd.Args, err)
 	}
+
+	// as of Go 1.16, running "go get" is always required for module tooling to work properly (https://golang.org/issue/40728)
+	packageArg := packagePath
 	if version != "" {
-		cmd = exec.Command("go", "get", packagePath+"@"+version)
-		cmd.Dir = tempDir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err = cmd.Run()
-		if err != nil {
-			return nil, fmt.Errorf("exec %v: %v", cmd.Args, err)
-		}
+		packageArg += "@" + version
+	}
+	cmd = exec.Command("go", "get", packageArg)
+	cmd.Dir = tempDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err = cmd.Run()
+	if err != nil {
+		return nil, fmt.Errorf("exec %v: %v", cmd.Args, err)
 	}
 
 	// finally, load and parse the package
