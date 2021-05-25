@@ -30,18 +30,8 @@ import (
 type Driver struct {
 	db Storage
 
+	// TODO: use this, there's probably a race on discoveredTypes
 	mu sync.RWMutex
-
-	// stores the mapping of package pattern inputs to the
-	// list of resulting package names; for example:
-	// package/... might expand to package/sub1, package/sub2, etc.
-	// the string values in this map correspond to keys in the
-	// parsedPackages map.
-	packagePatterns map[string][]string
-
-	// a cache of parsed packages, keyed by package name/ID/path
-	// and its version.
-	parsedPackages map[string]*packages.Package
 
 	// a cache of type definitions we've processed, keyed
 	// by the type's fqtn@version string.
@@ -52,8 +42,6 @@ type Driver struct {
 func New(database Storage) *Driver {
 	return &Driver{
 		db:              database,
-		packagePatterns: make(map[string][]string),
-		parsedPackages:  make(map[string]*packages.Package),
 		discoveredTypes: make(map[string]*Value),
 	}
 }

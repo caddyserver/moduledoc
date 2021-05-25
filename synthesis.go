@@ -24,43 +24,7 @@ import (
 	"time"
 
 	"golang.org/x/tools/go/ast/astutil"
-	"golang.org/x/tools/go/packages"
 )
-
-// cachedPackages returns the packages cached for the package keyed by
-// pkgKey (which may be in either "pattern" or "pattern@version" form).
-// If not cached, it will return nil or empty list.
-func (d *Driver) cachedPackages(pkgKey string) []*packages.Package {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	// first assume no package path expansion
-	pkgList := []string{pkgKey}
-
-	// if a pattern, compute expansion by mapping it to individual packages
-	if strings.Contains(pkgKey, "/...") {
-		pkgList = d.packagePatterns[pkgKey]
-		if len(pkgList) == 0 {
-			return nil
-		}
-	}
-
-	// recall each top-level parsed package from our cache
-	pkgs := make([]*packages.Package, len(pkgList))
-	for i, pkgKey := range pkgList {
-		pkg, ok := d.parsedPackages[pkgKey]
-		if !ok {
-			// one of the packages (whether the only package
-			// being requested, or one of them after expansion)
-			// is not cached, so we should not return anything
-			// or the caller will assume we had them all
-			return nil
-		}
-		pkgs[i] = pkg
-	}
-
-	return pkgs
-}
 
 type goListOutput struct {
 	Dir        string `json:"Dir"`

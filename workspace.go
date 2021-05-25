@@ -30,7 +30,20 @@ type workspace struct {
 	mu     *sync.RWMutex
 	dir    string
 	driver *Driver
+
+	// a memory of whether we already ran 'go get' for a package
 	goGets map[string]struct{}
+
+	// stores the mapping of package pattern inputs to the
+	// list of resulting package names; for example:
+	// package/... might expand to package/sub1, package/sub2, etc.
+	// the string values in this map correspond to keys in the
+	// parsedPackages map.
+	packagePatterns map[string][]string
+
+	// a cache of parsed packages, keyed by package name/ID/path
+	// and its version.
+	parsedPackages map[string]*packages.Package
 }
 
 func (d *Driver) openWorkspace() (workspace, error) {
@@ -50,10 +63,12 @@ func (d *Driver) openWorkspace() (workspace, error) {
 	}
 
 	return workspace{
-		mu:     new(sync.RWMutex),
-		dir:    tempDir,
-		driver: d,
-		goGets: make(map[string]struct{}),
+		mu:              new(sync.RWMutex),
+		dir:             tempDir,
+		driver:          d,
+		goGets:          make(map[string]struct{}),
+		packagePatterns: make(map[string][]string),
+		parsedPackages:  make(map[string]*packages.Package),
 	}, nil
 }
 
@@ -63,7 +78,10 @@ func (ws workspace) Close() error {
 
 // getPackage parses the package at packagePattern. This method is
 // amortized, so repeated calls will use an in-memory cache.
-// TODO: evict cache entries at some point...
+// TODO: the in-memory cache (ws.packagePatterns and the really
+// big one, ws.parsedPackages, used to be in the Driver which is
+// long-lived, but this used too much memory in the long run, so
+// now caching is ephemeral, per-workspace)
 func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Package, error) {
 	if packagePattern == "" {
 		return nil, fmt.Errorf("package path is empty")
@@ -75,7 +93,7 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 	}
 
 	// if we've already processed this pattern, reuse it
-	if cached := ws.driver.cachedPackages(pkgKey); len(cached) > 0 {
+	if cached := ws.cachedPackages(pkgKey); len(cached) > 0 {
 		return cached, nil
 	}
 
@@ -128,7 +146,7 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 		pkgNames = append(pkgNames, packageKey(pkg))
 	}
 	// TODO: these should probably expire, esp. if using 'latest' or a branch name
-	ws.driver.packagePatterns[pkgKey] = pkgNames
+	ws.packagePatterns[pkgKey] = pkgNames
 
 	// visit all packages (including imported ones) to cache them for future use,
 	// (shaves a *ton* of time off future processing; core Caddy package goes from
@@ -138,8 +156,9 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 		// cache parsed package for future use; key by both the versioned and
 		// non-versioned form of the package key, since future gets might not
 		// have or know a version (not perfect, but no harm yet?)
-		ws.driver.parsedPackages[pkg.ID] = pkg
-		ws.driver.parsedPackages[packageKey(pkg)] = pkg
+		// TODO: make this cache ephemeral (workspace-scoped), there's just not enough memory for all the versions.
+		ws.parsedPackages[pkg.ID] = pkg
+		ws.parsedPackages[packageKey(pkg)] = pkg
 
 		// check for errors
 		for i, e := range pkg.Errors {
@@ -156,6 +175,44 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 	}
 
 	return pkgs, nil
+}
+
+// cachedPackages returns the packages cached for the package keyed by
+// pkgKey (which may be in either "pattern" or "pattern@version" form).
+// If not cached, it will return nil or empty list.
+// (TODO: this used to be on the Driver, when the package cache lived
+// there for longevity, but we moved it into the workspace to save
+// memory in the long run)
+func (ws *workspace) cachedPackages(pkgKey string) []*packages.Package {
+	ws.mu.RLock()
+	defer ws.mu.RUnlock()
+
+	// first assume no package path expansion
+	pkgList := []string{pkgKey}
+
+	// if a pattern, compute expansion by mapping it to individual packages
+	if strings.Contains(pkgKey, "/...") {
+		pkgList = ws.packagePatterns[pkgKey]
+		if len(pkgList) == 0 {
+			return nil
+		}
+	}
+
+	// recall each top-level parsed package from our cache
+	pkgs := make([]*packages.Package, len(pkgList))
+	for i, pkgKey := range pkgList {
+		pkg, ok := ws.parsedPackages[pkgKey]
+		if !ok {
+			// one of the packages (whether the only package
+			// being requested, or one of them after expansion)
+			// is not cached, so we should not return anything
+			// or the caller will assume we had them all
+			return nil
+		}
+		pkgs[i] = pkg
+	}
+
+	return pkgs
 }
 
 func packageKey(pkg *packages.Package) string {
