@@ -128,8 +128,6 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 		pkgNames = append(pkgNames, packageKey(pkg))
 	}
 	// TODO: these should probably expire, esp. if using 'latest' or a branch name
-	ws.driver.mu.Lock()
-	defer ws.driver.mu.Unlock()
 	ws.driver.packagePatterns[pkgKey] = pkgNames
 
 	// visit all packages (including imported ones) to cache them for future use,

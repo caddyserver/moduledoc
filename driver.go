@@ -61,9 +61,6 @@ func New(database Storage) *Driver {
 // LoadModulesFromImportingPackage returns the Caddy modules (plugins) registered when
 // package at its given version is imported.
 func (d *Driver) LoadModulesFromImportingPackage(packagePattern, version string) ([]CaddyModule, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	ws, err := d.openWorkspace()
 	if err != nil {
 		return nil, fmt.Errorf("opening workspace: %v", err)
