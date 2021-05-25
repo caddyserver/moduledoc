@@ -5,7 +5,7 @@ ModuleDoc
 
 This package implements the source analysis core of [Caddy](https://caddyserver.com)'s [module documentation system](https://caddyserver.com/docs/json/). It reads Go code to generate JSON docs -- kind of like godoc, but following JSON tags, and with special integration with Caddy's module architecture.
 
-This package requires Go to be installed on the machine because it uses [the `packages` package](https://pkg.go.dev/golang.org/x/tools/go/packages). Inputs are fully-qualified package and type names, and outputs are JSON-structured type definitions and documentation. A backing data store is required for amortization.
+This package requires Go to be installed on the machine because it uses [the `packages` package](https://pkg.go.dev/golang.org/x/tools/go/packages) as well as running `go` commands directly. Inputs are fully-qualified package and type names, and outputs are JSON-structured type definitions and documentation. A backing data store is required for amortization.
 
 A front-end can then be built to render the results, for example: both https://caddyserver.com/docs/json/ and https://caddyserver.com/docs/modules are powered by this package.
 

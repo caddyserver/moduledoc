@@ -17,6 +17,7 @@ package moduledoc
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -27,8 +28,23 @@ import (
 //
 // An empty value is not valid; use New to obtain a valid value.
 type Driver struct {
-	db              Storage
-	parsedPackages  map[string]*packages.Package
+	db Storage
+
+	mu sync.RWMutex
+
+	// stores the mapping of package pattern inputs to the
+	// list of resulting package names; for example:
+	// package/... might expand to package/sub1, package/sub2, etc.
+	// the string values in this map correspond to keys in the
+	// parsedPackages map.
+	packagePatterns map[string][]string
+
+	// a cache of parsed packages, keyed by package name/ID/path
+	// and its version.
+	parsedPackages map[string]*packages.Package
+
+	// a cache of type definitions we've processed, keyed
+	// by the type's fqtn@version string.
 	discoveredTypes map[string]*Value
 }
 
@@ -36,20 +52,54 @@ type Driver struct {
 func New(database Storage) *Driver {
 	return &Driver{
 		db:              database,
+		packagePatterns: make(map[string][]string),
 		parsedPackages:  make(map[string]*packages.Package),
 		discoveredTypes: make(map[string]*Value),
 	}
 }
 
-// LoadModulesFromPackage loads and stores all Caddy modules found in the package
-// at the given fully-qualified package path.
-func (d *Driver) LoadModulesFromPackage(packagePath, version string) ([]CaddyModule, error) {
-	pkg, err := d.getPackage(packagePath, version)
+// LoadModulesFromImportingPackage returns the Caddy modules (plugins) registered when
+// package at its given version is imported.
+func (d *Driver) LoadModulesFromImportingPackage(packagePattern, version string) ([]CaddyModule, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ws, err := d.openWorkspace()
 	if err != nil {
-		return nil, fmt.Errorf("loading package %s: %v", packagePath, err)
+		return nil, fmt.Errorf("opening workspace: %v", err)
+	}
+	defer ws.Close()
+
+	pkgs, err := ws.getPackages(packagePattern, version)
+	if err != nil {
+		return nil, fmt.Errorf("loading package %s: %v", packagePattern, err)
 	}
 
-	caddyModuleIdents, err := d.findCaddyModuleIdents(pkg)
+	rb := ws.representationBuilder()
+
+	var allModules []CaddyModule
+
+	var visitErr error
+	packages.Visit(pkgs, func(pkg *packages.Package) bool {
+		return visitErr == nil
+	}, func(pkg *packages.Package) {
+		pkgModules, err := rb.loadModulesFromSinglePackage(pkg)
+		if err != nil {
+			visitErr = err
+			return
+		}
+		// TODO: remove duplicates?
+		allModules = append(allModules, pkgModules...)
+	})
+	if visitErr != nil {
+		return nil, visitErr
+	}
+
+	return allModules, nil
+}
+
+func (rb representationBuilder) loadModulesFromSinglePackage(pkg *packages.Package) ([]CaddyModule, error) {
+	caddyModuleIdents, err := rb.ws.driver.findCaddyModuleIdents(pkg)
 	if err != nil {
 		return nil, err
 	}
@@ -58,26 +108,23 @@ func (d *Driver) LoadModulesFromPackage(packagePath, version string) ([]CaddyMod
 	for ident, caddyModName := range caddyModuleIdents {
 		caddyModuleObj := pkg.TypesInfo.Uses[ident]
 
-		rb := representationBuilder{driver: d, baseGoModule: packagePath, goModuleVersion: version}
 		rep, err := rb.buildRepresentation(caddyModuleObj.Type())
 		if err != nil {
 			return nil, err
 		}
 
 		typeName := localTypeName(caddyModuleObj.Type())
-		rep.Doc = refineDoc(rep.Doc, typeName, caddyModName)
 
 		modules = append(modules, CaddyModule{
 			Name:           caddyModName,
 			Representation: rep,
 		})
 
-		err = d.db.SetCaddyModuleName(packagePath, typeName, caddyModName)
+		err = rb.ws.driver.db.SetCaddyModuleName(pkg, typeName, caddyModName)
 		if err != nil {
 			return nil, fmt.Errorf("saving Caddy module name to type: %v", err)
 		}
 	}
-
 	return modules, nil
 }
 
@@ -85,18 +132,27 @@ func (d *Driver) LoadModulesFromPackage(packagePath, version string) ([]CaddyMod
 // type in the given package. This is generally used for bootstrapping the docs with
 // the initial/base Config type, within which all modules are used.
 func (d *Driver) AddType(packageName, typeName, version string) (*Value, error) {
-	pkg, err := d.getPackage(packageName, version)
+	ws, err := d.openWorkspace()
+	if err != nil {
+		return nil, fmt.Errorf("opening workspace: %v", err)
+	}
+	defer ws.Close()
+
+	pkgs, err := ws.getPackages(packageName, version)
 	if err != nil {
 		return nil, fmt.Errorf("getting package %s: %v", packageName, err)
 	}
+	if len(pkgs) != 1 {
+		return nil, fmt.Errorf("expected 1 package, but got %d from pattern '%s'", len(pkgs), packageName)
+	}
+	pkg := pkgs[0]
 
 	obj := pkg.Types.Scope().Lookup(typeName)
 	if obj == nil {
 		return nil, fmt.Errorf("type %s not found in %s", typeName, packageName)
 	}
 
-	rb := representationBuilder{driver: d, baseGoModule: packageName, goModuleVersion: version}
-	rep, err := rb.buildRepresentation(obj.Type())
+	rep, err := ws.representationBuilder().buildRepresentation(obj.Type())
 	if err != nil {
 		return nil, fmt.Errorf("building representation of %s: %v", obj.Name(), err)
 	}
@@ -106,8 +162,8 @@ func (d *Driver) AddType(packageName, typeName, version string) (*Value, error) 
 
 // LoadTypeByPath loads the type representation at the given config path.
 // It returns the exact value at that path and the nearest named type.
-func (d *Driver) LoadTypeByPath(configPath string) (exact, nearest *Value, err error) {
-	val, err := d.db.GetTypeByName("github.com/caddyserver/caddy/v2", "Config")
+func (d *Driver) LoadTypeByPath(configPath, version string) (exact, nearest *Value, err error) {
+	val, err := d.db.GetTypeByName(CaddyCorePackage, "Config", version)
 	if err != nil {
 		return nil, nil, fmt.Errorf("getting start type: %v", err)
 	}
@@ -235,3 +291,6 @@ type CaddyModule struct {
 	Name           string `json:"module_name,omitempty"`
 	Representation *Value `json:"structure,omitempty"`
 }
+
+// CaddyCorePackage is the import path of the Caddy core package.
+const CaddyCorePackage = "github.com/caddyserver/caddy/v2"

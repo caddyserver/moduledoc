@@ -84,6 +84,7 @@ func fullyQualifiedTypeName(typ types.Type) string {
 // type.
 func typePackageAndName(typ types.Type) (pkgPath, typeName string) {
 	if nt, ok := typ.(*types.Named); ok {
+		// TODO: should be Pkg().Name() instead?
 		return nt.Obj().Pkg().Path(), nt.Obj().Name()
 	}
 	return "", ""
@@ -96,13 +97,4 @@ func localTypeName(typ types.Type) string {
 		return nt.Obj().Name()
 	}
 	return ""
-}
-
-// isNonStandardType returns true if the given fqtn
-// (fully-qualified type name) is in the Go standard
-// lib. It's somewhat naive; it returns true if the
-// package path has a dot in it.
-func isNonStandardType(fqtn string) bool {
-	pkgPath, _ := SplitLastDot(fqtn)
-	return strings.Contains(pkgPath, ".")
 }

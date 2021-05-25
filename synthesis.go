@@ -15,107 +15,83 @@
 package moduledoc
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/types"
-	"io/ioutil"
-	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/go/packages"
 )
 
-// getPackage parses the package at packagePath. This method is
-// amortized, so repeated calls will use an in-memory cache.
-// TODO: expire cache entries after some amount of time
-func (ds *Driver) getPackage(packagePath, version string) (*packages.Package, error) {
-	if packagePath == "" {
-		return nil, fmt.Errorf("package path is empty")
-	}
-	// TODO: help, haha
-	// if version == "" {
-	// 	log.Printf("[WARNING] Go package %s: version is empty; using 'latest'", packagePath)
-	// 	version = "latest"
-	// }
+// cachedPackages returns the packages cached for the package keyed by
+// pkgKey (which may be in either "pattern" or "pattern@version" form).
+// If not cached, it will return nil or empty list.
+func (d *Driver) cachedPackages(pkgKey string) []*packages.Package {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 
-	// TODO: these should probably expire, esp. if using 'latest'
-	if pkg, ok := ds.parsedPackages[packagePath+"@"+version]; ok {
-		return pkg, nil
-	}
+	// first assume no package path expansion
+	pkgList := []string{pkgKey}
 
-	// set up go.mod in a new temporary folder so that the
-	// x/tools/go/packages package can run 'go list' in a
-	// way that honors the desired version, if set
-	tempDir, err := ioutil.TempDir("", "caddy_docsys_")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tempDir)
-
-	cmd := exec.Command("go", "mod", "init", "temp/docsys")
-	cmd.Dir = tempDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		return nil, fmt.Errorf("exec %v: %v", cmd.Args, err)
-	}
-
-	// as of Go 1.16, running "go get" is always required for module tooling to work properly (https://golang.org/issue/40728)
-	packageArg := packagePath
-	if version != "" {
-		packageArg += "@" + version
-	}
-	cmd = exec.Command("go", "get", packageArg)
-	cmd.Dir = tempDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
-	if err != nil {
-		return nil, fmt.Errorf("exec %v: %v", cmd.Args, err)
-	}
-
-	// finally, load and parse the package
-	cfg := &packages.Config{
-		Dir: tempDir,
-		Mode: packages.NeedSyntax |
-			packages.NeedImports |
-			packages.NeedTypes |
-			packages.NeedTypesInfo,
-
-		// on Linux, leaving CGO_ENABLED to the default value of 1 would
-		// cause an error: "could not import C (no metadata for C)", but
-		// only on Linux... on my Mac it worked fine either way
-		Env: append(os.Environ(), "CGO_ENABLED=0"),
-	}
-	pkgs, err := packages.Load(cfg, packagePath)
-	if err != nil {
-		return nil, fmt.Errorf("packages.Load: %v", err)
-	}
-
-	// see if there are any errors in the import graph
-	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
-		for i, e := range pkg.Errors {
-			var prefix string
-			if i > 0 {
-				prefix = "\n"
-			}
-			err = fmt.Errorf("%v%s%s", err, prefix, e.Error())
+	// if a pattern, compute expansion by mapping it to individual packages
+	if strings.Contains(pkgKey, "/...") {
+		pkgList = d.packagePatterns[pkgKey]
+		if len(pkgList) == 0 {
+			return nil
 		}
-	})
-	if err != nil {
-		return nil, err
 	}
-	if len(pkgs) != 1 {
-		return nil, fmt.Errorf("expected 1 package, but got %d", len(pkgs))
+
+	// recall each top-level parsed package from our cache
+	pkgs := make([]*packages.Package, len(pkgList))
+	for i, pkgKey := range pkgList {
+		pkg, ok := d.parsedPackages[pkgKey]
+		if !ok {
+			// one of the packages (whether the only package
+			// being requested, or one of them after expansion)
+			// is not cached, so we should not return anything
+			// or the caller will assume we had them all
+			return nil
+		}
+		pkgs[i] = pkg
 	}
-	pkg := pkgs[0]
 
-	ds.parsedPackages[packagePath+"@"+version] = pkg
+	return pkgs
+}
 
-	return pkg, nil
+type goListOutput struct {
+	Dir        string `json:"Dir"`
+	ImportPath string `json:"ImportPath"`
+	Name       string `json:"Name"`
+	Root       string `json:"Root"`
+	Module     struct {
+		Path    string `json:"Path"`
+		Version string `json:"Version"`
+		Replace struct {
+			Path      string `json:"Path"`
+			Dir       string `json:"Dir"`
+			GoMod     string `json:"GoMod"`
+			GoVersion string `json:"GoVersion"`
+		} `json:"Replace"`
+		Time      time.Time `json:"Time"`
+		Dir       string    `json:"Dir"`
+		GoMod     string    `json:"GoMod"`
+		GoVersion string    `json:"GoVersion"`
+	} `json:"Module"`
+	Match          []string `json:"Match"`
+	Stale          bool     `json:"Stale"`
+	StaleReason    string   `json:"StaleReason"`
+	GoFiles        []string `json:"GoFiles"`
+	GoRoot         bool     `json:"Goroot"`
+	Standard       bool     `json:"Standard"`
+	IgnoredGoFiles []string `json:"IgnoredGoFiles"`
+	Imports        []string `json:"Imports"`
+	Deps           []string `json:"Deps"`
+	TestGoFiles    []string `json:"TestGoFiles"`
+	TestImports    []string `json:"TestImports"`
 }
 
 // getStructFieldGodocs gets the godoc for the struct fields in typ,
@@ -123,17 +99,19 @@ func (ds *Driver) getPackage(packagePath, version string) (*packages.Package, er
 func (rb representationBuilder) getStructFieldGodocs(typ types.Type) (map[string]string, error) {
 	packagePath, typeName := typePackageAndName(typ)
 
-	// TODO: version is not known here; as we traverse a type, we
-	// could pass into different packages (go modules) which have
-	// different versions... is that going to be a problem?
-	var version string
-	if packagePath == rb.baseGoModule {
-		version = rb.goModuleVersion
-	}
-	pkg, err := rb.driver.getPackage(packagePath, version)
+	typeVersion, err := rb.getDepVersion(typ.(*types.Named))
 	if err != nil {
 		return nil, err
 	}
+
+	pkgs, err := rb.ws.getPackages(packagePath, typeVersion)
+	if err != nil {
+		return nil, err
+	}
+	if len(pkgs) != 1 {
+		return nil, fmt.Errorf("expected 1 package, but got %d from pattern '%s'", len(pkgs), packagePath)
+	}
+	pkg := pkgs[0]
 
 	fieldGodocs := make(map[string]string)
 	var found bool
@@ -162,43 +140,28 @@ func (rb representationBuilder) getStructFieldGodocs(typ types.Type) (map[string
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("did not find struct type %s in %s", typeName, pkg.Name)
+		return nil, fmt.Errorf("did not find struct type %s in %s", typeName, pkg.ID)
 	}
 	return fieldGodocs, nil
-}
-
-// refineDoc transforms godoc slightly so it is more suitable
-// for display to the client; for example, it replaces the Go
-// type name (WhichHasCaps) to the JSON name (which_has_underscores)
-// so it is more recognizable.
-// TODO: This could probably be a lot better.
-func refineDoc(doc, oldName, newName string) string {
-	if oldName == "" || newName == "" {
-		return doc
-	}
-	_, oldName = SplitLastDot(oldName)
-	doc = strings.TrimSpace(doc)
-	if strings.HasPrefix(doc, oldName) {
-		doc = strings.Replace(doc, oldName, newName, 1)
-	}
-	return doc
 }
 
 // getGodocForType returns the godoc for the given type.
 func (rb representationBuilder) getGodocForType(typ types.Type) (string, error) {
 	packagePath, typeName := typePackageAndName(typ)
 
-	// TODO: version is not known here; as we traverse a type, we
-	// could pass into different packages (go modules) which have
-	// different versions... is that going to be a problem?
-	var version string
-	if packagePath == rb.baseGoModule {
-		version = rb.goModuleVersion
-	}
-	pkg, err := rb.driver.getPackage(packagePath, version)
+	typeVersion, err := rb.getDepVersion(typ.(*types.Named))
 	if err != nil {
 		return "", err
 	}
+
+	pkgs, err := rb.ws.getPackages(packagePath, typeVersion)
+	if err != nil {
+		return "", err
+	}
+	if len(pkgs) != 1 {
+		return "", fmt.Errorf("expected 1 package, but got %d from pattern '%s'", len(pkgs), packagePath)
+	}
+	pkg := pkgs[0]
 
 	var foundObj bool
 	for _, f := range pkg.Syntax {
@@ -229,15 +192,14 @@ func (rb representationBuilder) getGodocForType(typ types.Type) (string, error) 
 	}
 
 	if !foundObj {
-		return "", fmt.Errorf("did not find type '%s' in '%s' from package path '%s'", typeName, pkg.Name, packagePath)
+		return "", fmt.Errorf("did not find type '%s' in '%s' from package path '%s'", typeName, pkg.ID, packagePath)
 	}
 	return "", nil
 }
 
 type representationBuilder struct {
-	driver          *Driver
-	baseGoModule    string
-	goModuleVersion string
+	ws           workspace
+	versionCache map[string]string
 }
 
 // buildRepresentation returns a structured representation of
@@ -273,20 +235,29 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 
 	switch typ := caddyModuleType.(type) {
 	case *types.Named:
+		typeVersion, err := rb.getDepVersion(typ)
+		if err != nil {
+			return nil, err
+		}
+
 		// if type has already been seen, return that
 		fqtn := caddyModuleType.String() // all that matters is that this is unique
-		if _, ok := rb.driver.discoveredTypes[fqtn]; ok {
-			return &Value{SameAs: fqtn}, nil
+		sameAs := fqtn
+		if typeVersion != "" {
+			sameAs += "@" + typeVersion
+		}
+		if _, ok := rb.ws.driver.discoveredTypes[sameAs]; ok {
+			return &Value{SameAs: sameAs}, nil
 		}
 
 		// if type has not already been seen but already exists in db, return that
 		packagePath, typeName := typePackageAndName(caddyModuleType)
-		discoveredType, err := rb.driver.db.GetTypeByName(packagePath, typeName)
+		discoveredType, err := rb.ws.driver.db.GetTypeByName(packagePath, typeName, typeVersion)
 		if err != nil {
 			return nil, err
 		}
 		if discoveredType != nil {
-			rb.driver.discoveredTypes[fqtn] = discoveredType
+			rb.ws.driver.discoveredTypes[sameAs] = discoveredType
 			return &Value{SameAs: discoveredType.TypeName}, nil
 		}
 
@@ -345,7 +316,7 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 
 				// embedded values act as if their fields were part of this type
 				if field.Embedded() {
-					embedded, err := rb.driver.dereference(fieldRep)
+					embedded, err := rb.ws.driver.dereference(fieldRep)
 					if err != nil {
 						return nil, err
 					}
@@ -356,7 +327,7 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 					rep.StructFields = append(rep.StructFields, &StructField{
 						Key:   jsonName,
 						Value: fieldRep,
-						Doc:   refineDoc(structFieldDocs[field.Name()], field.Name(), jsonName),
+						Doc:   structFieldDocs[field.Name()],
 					})
 				}
 			}
@@ -377,16 +348,16 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 		rep.TypeName = fullTypeName
 
 		// remember this type so we don't have to re-assemble it all later
-		rb.driver.discoveredTypes[fqtn] = rep
-		err = rb.driver.db.StoreType(packagePath, typeName, rep)
+		rb.ws.driver.discoveredTypes[sameAs] = rep
+		err = rb.ws.driver.db.StoreType(packagePath, typeName, typeVersion, rep)
 		if err != nil {
 			return nil, err
 		}
 
-		return &Value{SameAs: rep.TypeName}, nil
+		return &Value{SameAs: sameAs}, nil
 
 	case *types.Struct:
-		// very similar to above case, but this is an unnamed struct (can't get godoc without a name)
+		// very similar to above case, but this is an inlined, unnamed struct (can't get godoc without a name)
 		rep := &Value{Type: Struct}
 
 		for i := 0; i < typ.NumFields(); i++ {
@@ -456,6 +427,55 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 	default:
 		return nil, fmt.Errorf("unknown type %s: %#v", caddyModuleType.String(), caddyModuleType)
 	}
+}
+
+func (rb *representationBuilder) getDepVersion(typ *types.Named) (string, error) {
+	fieldTypePackageName, _ := typePackageAndName(typ.Obj().Type())
+	if fieldTypePackageName == "" {
+		// TODO: we could probably ignore this error, but let's see...
+		return "", fmt.Errorf("unable to determine type's package")
+	}
+
+	// see if we already have the version cached (should be same as any parent packages)
+	parts := strings.Split(fieldTypePackageName, "/")
+	for i := len(parts); i > 0; i-- {
+		parent := strings.Join(parts[:i], "/")
+		if parentVersion, ok := rb.versionCache[parent]; ok {
+			return parentVersion, nil
+		}
+	}
+
+	// get the version of the module in use for this package in our workspace
+	pkgInfo, err := runGoList(rb.ws.dir, fieldTypePackageName)
+	if err != nil {
+		return "", err
+	}
+
+	// cache for future use (shaves off a *LOT* of time)
+	pathKey := pkgInfo.Module.Path
+	if pkgInfo.Standard {
+		// module version will be empty because it's a Go standard library type; oh well
+		pathKey = pkgInfo.ImportPath
+	}
+	rb.versionCache[pathKey] = pkgInfo.Module.Version
+
+	return pkgInfo.Module.Version, nil
+}
+
+func runGoList(workspaceDir, pkg string) (goListOutput, error) {
+	pkg = strings.TrimSuffix(pkg, "/...")
+	cmd := exec.Command("go", "list", "-json", pkg)
+	cmd.Dir = workspaceDir
+	results, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return goListOutput{}, fmt.Errorf("exec %v: %v; >>>>>>\n%s\n<<<<<<", cmd.Args, err, ee.Stderr)
+		}
+		return goListOutput{}, fmt.Errorf("exec %v: %v", cmd.Args, err)
+	}
+	var pkgInfo goListOutput
+	err = json.Unmarshal(results, &pkgInfo)
+	return pkgInfo, err
 }
 
 const caddyCorePackagePath = "github.com/caddyserver/caddy/v2"

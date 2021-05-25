@@ -15,7 +15,10 @@
 package moduledoc
 
 import (
+	"fmt"
 	"strings"
+
+	"golang.org/x/tools/go/packages"
 )
 
 // Storage describes the methods necessary for a documentation driver to
@@ -23,7 +26,7 @@ import (
 type Storage interface {
 	// GetTypeByName returns a type by its type name, comprising a
 	// package path and the identifier/name within that package.
-	GetTypeByName(packagePath, name string) (*Value, error)
+	GetTypeByName(packagePath, name, version string) (*Value, error)
 
 	// GetTypeByCaddyModuleID returns a type by its Caddy module ID.
 	GetTypeByCaddyModuleID(caddyModuleID string) (*Value, error)
@@ -33,11 +36,11 @@ type Storage interface {
 	GetAllModules() (map[string]Value, error)
 
 	// StoreType stores a type with the given package path and type name.
-	StoreType(packagePath, typeName string, rep *Value) error
+	StoreType(packagePath, typeName, version string, rep *Value) error
 
 	// SetCaddyModuleName sets the module name for the type with the
-	// given package path and name.
-	SetCaddyModuleName(packagePath, typeName, modName string) error
+	// given package and type name.
+	SetCaddyModuleName(pkg *packages.Package, typeName, modName string) error
 }
 
 // dereference follows val.SameAs and returns the
@@ -52,9 +55,17 @@ func (ds *Driver) dereference(val *Value) (*Value, error) {
 	}
 
 	// load the referenced type
-	typ, err := ds.getTypeByFullName(val.SameAs)
+	parts := strings.SplitN(val.SameAs, "@", 2)
+	fqtn, version := parts[0], ""
+	if len(parts) == 2 {
+		version = parts[1]
+	}
+	typ, err := ds.getTypeByFullName(fqtn, version)
 	if err != nil {
 		return nil, err
+	}
+	if typ == nil {
+		return nil, fmt.Errorf("dereference failed, type not found: %s@%s", fqtn, version)
 	}
 
 	// transfer over the module namespace and inline key, since that
@@ -114,7 +125,7 @@ func (ds *Driver) deepDereference(val *Value) (*Value, error) {
 		}
 
 		if underlyingTypeVal.Doc != "" {
-			sf.Doc = refineDoc(underlyingTypeVal.Doc, underlyingTypeVal.TypeName, sf.Key)
+			sf.Doc = underlyingTypeVal.Doc
 		}
 	}
 
@@ -138,8 +149,8 @@ func (ds *Driver) deepDereference(val *Value) (*Value, error) {
 }
 
 // getTypeByFullName gets the type representation for the given type
-// by its fully-qualified type name.
-func (ds *Driver) getTypeByFullName(fqtn string) (*Value, error) {
+// by its fully-qualified type name and version.
+func (ds *Driver) getTypeByFullName(fqtn, version string) (*Value, error) {
 	pkgName, typeName := SplitLastDot(fqtn)
-	return ds.db.GetTypeByName(pkgName, typeName)
+	return ds.db.GetTypeByName(pkgName, typeName, version)
 }

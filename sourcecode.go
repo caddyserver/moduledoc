@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"log"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -85,12 +86,13 @@ func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]s
 					return false
 				}
 
-				// it should be a composite  literal (struct)
+				// it should be a composite literal (struct)
 				compLit, ok := val.Results[0].(*ast.CompositeLit)
 				if !ok {
 					inspectErr = fmt.Errorf("expected composite literal return value from %#v; got %#v", val, val.Results[0])
 					return false
 				}
+
 				// TODO: Maybe double-check that the type is specifically a caddy.ModuleInfo struct
 
 				// peer inside its elements to get the name
@@ -101,8 +103,21 @@ func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]s
 						continue
 					}
 					if kv.Key.(*ast.Ident).Name == "ID" {
+						// TODO: configadapters.go in the main caddy module has an unexported helper type called
+						// adapterModule which implements CaddyModule interface, and its ID is computed, not static:
+						// `caddy.ModuleID("caddy.adapters." + am.name)` - this is obviously problematic here...
+						// but that's also a special case that real modules should not be having
+						kvValueBasicLiteral, ok := kv.Value.(*ast.BasicLit)
+						if !ok {
+							log.Printf("[WARNING] CaddyModule() method in %s returns ModuleInfo with unsupported ID value (must be a static literal value); skipping: %#v", file.Name, kv.Value)
+							delete(caddyModRegs, currentCaddyModuleFunc.Name)
+							delete(caddyModImpls, currentCaddyModuleFunc.Name)
+							currentCaddyModuleFunc = nil
+							return true
+						}
+
 						// TODO: What if the module name is pulled out to a constant? do we need to evaluate it?
-						rawString := kv.Value.(*ast.BasicLit).Value
+						rawString := kvValueBasicLiteral.Value
 						caddyModName = strings.Trim(rawString, `"`)
 						break
 					}
@@ -129,10 +144,10 @@ func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]s
 	// not registered, and vice-versa
 	for key, val := range caddyModRegs {
 		if _, ok := caddyModImpls[key]; !ok {
-			return nil, fmt.Errorf("Caddy module gets registered but does not implement caddy.Module interface: %#v", val)
+			return nil, fmt.Errorf("caddy module gets registered but does not implement caddy.Module interface: %#v", val)
 		}
 		if _, ok := caddyModIDs[key]; !ok {
-			return nil, fmt.Errorf("Caddy module gets registered, but we could not find its module name: %#v", val)
+			return nil, fmt.Errorf("caddy module gets registered, but we could not find its module name: %#v", val)
 		}
 	}
 	for key, val := range caddyModImpls {
@@ -273,7 +288,7 @@ type Value struct {
 	// If this value's type is the reuse of an existing
 	// named type for which we already have the structure
 	// documented, SameAs contains the fully-qualified
-	// type name.
+	// type name and possibly version (fqtn@version).
 	SameAs string `json:"same_as,omitempty"`
 
 	// If this value is fulfilled by a Caddy module,
