@@ -224,10 +224,11 @@ func (d *Driver) TraverseType(path string, start *Value) (val, nearestType *Valu
 			if i == len(parts)-1 {
 				moduleInlineKey = val.ModuleInlineKey
 			}
-			val, err = d.db.GetTypeByCaddyModuleID(caddyModuleID)
+			vals, err := d.db.GetTypesByCaddyModuleID(caddyModuleID)
 			if err != nil {
 				return nil, nil, fmt.Errorf("loading type for module %s: %v", caddyModuleID, err)
 			}
+			val = vals[0] // TODO: support multiple values (two modules with same ID)... how? if in the middle, maybe find the one that matches; if at end...? maybe return a slice of them?
 			val.ModuleInlineKey = moduleInlineKey
 
 		case Map, Array:
@@ -250,25 +251,21 @@ func (d *Driver) TraverseType(path string, start *Value) (val, nearestType *Valu
 	return val, nearestType, nil
 }
 
-// LoadTypeByModuleID returns the type information for the Caddy module
-// with the given ID. It deeply dereferences the module so that all
-// type information and docs are included in the result.
-func (d *Driver) LoadTypeByModuleID(moduleName string) (*Value, error) {
-	val, err := d.db.GetTypeByCaddyModuleID(moduleName)
+// LoadTypesByModuleID returns the type information for the Caddy module(s)
+// with the given ID. It deeply dereferences the module(s) so that all type
+// information and docs are included in the result.
+func (d *Driver) LoadTypesByModuleID(moduleName string) ([]*Value, error) {
+	vals, err := d.db.GetTypesByCaddyModuleID(moduleName)
 	if err != nil {
 		return nil, err
 	}
-	val, err = d.deepDereference(val)
-	if err != nil {
-		return nil, fmt.Errorf("dereferencing module type %s: %v", val.TypeName, err)
+	for i := range vals {
+		vals[i], err = d.deepDereference(vals[i])
+		if err != nil {
+			return nil, fmt.Errorf("dereferencing module type %s: %v", vals[i].TypeName, err)
+		}
 	}
-	return val, nil
-}
-
-// GetAllModules returns a map of all modules, keyed by the
-// full module ID.
-func (d *Driver) GetAllModules() (map[string]Value, error) {
-	return d.db.GetAllModules()
+	return vals, nil
 }
 
 // CaddyModule represents a Caddy module.

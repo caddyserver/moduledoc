@@ -28,12 +28,9 @@ type Storage interface {
 	// package path and the identifier/name within that package.
 	GetTypeByName(packagePath, name, version string) (*Value, error)
 
-	// GetTypeByCaddyModuleID returns a type by its Caddy module ID.
-	GetTypeByCaddyModuleID(caddyModuleID string) (*Value, error)
-
-	// GetAllModules returns the values for all modules, keyed
-	// by module ID.
-	GetAllModules() (map[string]Value, error)
+	// GetTypesByCaddyModuleID returns matching types by the Caddy module ID.
+	// (Caddy module IDs are not necessarily globally unique.)
+	GetTypesByCaddyModuleID(caddyModuleID string) ([]*Value, error)
 
 	// StoreType stores a type with the given package path and type name.
 	StoreType(packagePath, typeName, version string, rep *Value) error
