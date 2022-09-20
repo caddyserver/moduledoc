@@ -30,7 +30,7 @@ import (
 type Driver struct {
 	db Storage
 
-	// TODO: use this, there's probably a race on discoveredTypes
+	// TODO: use this, there's DEFINITELY A CONFIRMED race on discoveredTypes
 	mu sync.RWMutex
 
 	// a cache of type definitions we've processed, keyed
