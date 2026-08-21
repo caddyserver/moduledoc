@@ -40,9 +40,13 @@ Implement `Storage` for caching - methods: `GetTypeByName`, `GetTypesByCaddyModu
 ## Testing Patterns
 
 ### Test Structure
-- Use `testdata/` directory with minimal Caddy module examples
+- Two suites: baseline tests (pass on current behavior, document limitations) and the edge-case suite (assert correct behavior; intentionally RED until the tracked bug is fixed)
+- Do not "fix" a red edge-case test by weakening its assertions; fix the source bug it tracks
+- Use `testdata/` fixture packages (one per directory) with minimal Caddy module examples
 - Load packages with full AST/types info: `packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo`
 - Set `CGO_ENABLED=0` in test environments to avoid "no metadata for C" errors
+- Toolchain-dependent tests skip under `go test -short`; crash-prone tests (stack overflow, fatal map races) re-run themselves in a child process via `runIsolated`
+- A reusable thread-safe in-memory mock Storage (`memStorage`) lives in `storage_edge_test.go`
 
 ### Example Module Pattern (see `testdata/gizmo.go`):
 ```go
@@ -78,20 +82,19 @@ func (*ModuleName) CaddyModule() caddy.ModuleInfo {
 
 ## Recent Improvements (2025)
 
-### Fixed Critical Issues
-- **Race Conditions**: Added proper mutex locking around `discoveredTypes` map access
-- **Dynamic Module IDs**: Enhanced AST analysis to handle computed module IDs like `caddy.ModuleID("prefix" + suffix)`
-- **Constant Resolution**: Module IDs can now reference package-level constants
-- **Graceful Degradation**: Unknown Go types fallback to string representation instead of hard failures
-- **Memory Management**: Implemented LRU cache with TTL (30min) and size limits (100 entries) for package cache
-- **Relaxed Validation**: Modules with only `CaddyModule()` implementation (no registration) now generate warnings instead of errors
+None. An earlier version of this document claimed fixes (mutex locking, LRU cache with TTL, dynamic module ID support, graceful type fallbacks, relaxed validation) that were never implemented. Do not assume any of them exist.
 
-### Enhanced Error Handling
-- Interface types, channels, and function signatures have proper fallback representations
-- Complex AST expressions (binary operations, function calls, selectors) are now supported for module IDs
-- Cache eviction prevents memory leaks in long-running processes
+## Known Limitations & Open Bugs
+
+- **Not thread-safe**: `Driver.mu` is declared but never used; `discoveredTypes` is accessed without locking (confirmed data race). `dereference` mutates Storage-owned values in place, making concurrent `LoadTypesByModuleID` racy as well.
+- **Static module IDs only**: IDs computed from constants or expressions (e.g. `caddy.ModuleID("prefix" + suffix)`) are silently skipped with a warning; only `*ast.BasicLit` string literals are supported.
+- **Panics on edge inputs**: `TraverseType` panics on unknown module IDs (`vals[0]` without a length check); unchecked AST type assertions panic on inputs like `caddy.RegisterModule(otherpkg.Type{})`.
+- **No recursion guards**: self-referential types cause stack overflows in both `buildRepresentation` and `deepDereference`.
+- **Hard failures on unknown types**: chan/func/generic fields error out the whole containing type; no fallback representation.
+- **Unbounded caches**: per-workspace package caches have no TTL, size limit, or eviction (memory-growth issue only; access is properly locked).
+- **Strict validation**: one incomplete module (registration without implementation, or vice versa) fails the entire package load.
 
 ## Development Notes
 - Requires Go toolchain installed (uses `go` commands directly)
-- Thread-safe operations with proper mutex locking on all shared state
-- Heavy caching for performance - workspace package cache with automatic eviction, type representation cache
+- **NOT thread-safe** — do not share a Driver or workspace across goroutines until the tracked races are fixed
+- Caching is per-workspace and unbounded (no eviction); the Driver's `discoveredTypes` type cache is unsynchronized

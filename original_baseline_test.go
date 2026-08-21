@@ -26,7 +26,7 @@ func TestOriginalImplementation(t *testing.T) {
 	t.Run("BasicModuleDetection", func(t *testing.T) {
 		// Test that basic module detection works with static string literals
 		cfg := &packages.Config{
-			Dir: "testdata",
+			Dir: ".",
 			Mode: packages.NeedSyntax |
 				packages.NeedImports |
 				packages.NeedDeps |
@@ -36,7 +36,7 @@ func TestOriginalImplementation(t *testing.T) {
 			Env: append(os.Environ(), "CGO_ENABLED=0"),
 		}
 
-		pkgs, err := packages.Load(cfg, "testdata")
+		pkgs, err := packages.Load(cfg, "./testdata")
 		if err != nil {
 			t.Fatalf("Failed to load testdata: %v", err)
 		}

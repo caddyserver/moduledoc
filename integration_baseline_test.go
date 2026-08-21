@@ -7,16 +7,26 @@ import (
 // TestIntegrationOriginalBehavior tests the integration between workspace, synthesis, and storage
 func TestIntegrationOriginalBehavior(t *testing.T) {
 	t.Run("FullWorkflowWithTestdata", func(t *testing.T) {
-		// Test the complete workflow from package loading to module detection
-		driver := New(nil)
+		if testing.Short() {
+			t.Skip("requires the Go toolchain")
+		}
+		// the public API needs a fetchable module path, so run the same
+		// pipeline (load → find idents → build representations) against
+		// the local testdata package instead
+		driver := New(newMemStorage())
+		ws := localWorkspace(t, driver)
 
-		// Test LoadModulesFromImportingPackage with testdata
-		// Note: testdata is not a valid module path, so this will fail
-		// but demonstrates the integration behavior
-		modules, err := driver.LoadModulesFromImportingPackage("./testdata", "")
+		pkgs, err := ws.getPackages(testdataPackagePath, "")
 		if err != nil {
-			t.Errorf("LoadModulesFromImportingPackage failed: %v", err)
-			return
+			t.Fatalf("loading testdata package: %v", err)
+		}
+		if len(pkgs) != 1 {
+			t.Fatalf("expected 1 package, got %d", len(pkgs))
+		}
+
+		modules, err := ws.representationBuilder().loadModulesFromSinglePackage(pkgs[0])
+		if err != nil {
+			t.Fatalf("loading modules from testdata package: %v", err)
 		}
 
 		t.Logf("Found %d modules in testdata", len(modules))
@@ -82,15 +92,21 @@ func TestIntegrationOriginalBehavior(t *testing.T) {
 			ModuleInlineKey: stringPtr("type"),
 		}
 
-		// Test that dereference panics with nil storage when SameAs is set
+		// A nil Storage is invalid usage; today dereference panics on it,
+		// a graceful error would also be acceptable — only require that it
+		// does not silently succeed
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					t.Logf("✓ Dereference panicked as expected with nil storage: %v", r)
+					t.Logf("✓ Dereference panicked with nil storage: %v", r)
 				}
 			}()
-			_, _ = driver.dereference(valWithSameAs)
-			t.Error("Expected dereference to panic with nil storage")
+			_, err := driver.dereference(valWithSameAs)
+			if err != nil {
+				t.Logf("✓ Dereference returned error with nil storage: %v", err)
+			} else {
+				t.Error("dereference with nil storage must not silently succeed")
+			}
 		}()
 
 		// Test dereference with empty SameAs - this should work fine
