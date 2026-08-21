@@ -17,6 +17,7 @@ package moduledoc
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/types"
 	"log"
 	"strings"
@@ -102,24 +103,29 @@ func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]s
 					if !ok {
 						continue
 					}
-					if kv.Key.(*ast.Ident).Name == "ID" {
-						// TODO: configadapters.go in the main caddy module has an unexported helper type called
-						// adapterModule which implements CaddyModule interface, and its ID is computed, not static:
-						// `caddy.ModuleID("caddy.adapters." + am.name)` - this is obviously problematic here...
-						// but that's also a special case that real modules should not be having
-						kvValueBasicLiteral, ok := kv.Value.(*ast.BasicLit)
-						if !ok {
-							log.Printf("[WARNING] CaddyModule() method in %s returns ModuleInfo with unsupported ID value (must be a static literal value); skipping: %#v", file.Name, kv.Value)
-							delete(caddyModRegs, currentCaddyModuleFunc.Name)
-							delete(caddyModImpls, currentCaddyModuleFunc.Name)
-							currentCaddyModuleFunc = nil
-							return true
+					keyIdent, ok := kv.Key.(*ast.Ident)
+					if !ok {
+						continue
+					}
+					if keyIdent.Name == "ID" {
+						// the type checker evaluates constant expressions, so
+						// literals, constants, and constant concatenations all work;
+						// only truly runtime-computed IDs remain unsupported
+						if tv, ok := pkg.TypesInfo.Types[kv.Value]; ok && tv.Value != nil && tv.Value.Kind() == constant.String {
+							caddyModName = constant.StringVal(tv.Value)
+							break
 						}
-
-						// TODO: What if the module name is pulled out to a constant? do we need to evaluate it?
-						rawString := kvValueBasicLiteral.Value
-						caddyModName = strings.Trim(rawString, `"`)
-						break
+						// no usable type info (e.g. package has errors); still
+						// accept plain string literals
+						if lit, ok := kv.Value.(*ast.BasicLit); ok {
+							caddyModName = strings.Trim(lit.Value, `"`)
+							break
+						}
+						log.Printf("[WARNING] CaddyModule() method in %s returns ModuleInfo with unsupported ID value (must be constant); skipping: %#v", file.Name, kv.Value)
+						delete(caddyModRegs, currentCaddyModuleFunc.Name)
+						delete(caddyModImpls, currentCaddyModuleFunc.Name)
+						currentCaddyModuleFunc = nil
+						return true
 					}
 				}
 
@@ -214,12 +220,24 @@ func (ds *Driver) findModuleRegistration(pkg *packages.Package, fnCall *ast.Call
 	switch val := fnCall.Args[0].(type) {
 	case *ast.CompositeLit:
 		// happens with `caddy.RegisterModule(Gizmo{})`
-		caddyModuleIdent = val.Type.(*ast.Ident)
+		ident, ok := val.Type.(*ast.Ident)
+		if !ok {
+			// e.g. a qualified type from another package; it will be
+			// documented from its home package, so skip it here
+			log.Printf("[WARNING] %s() argument type is not declared in this package; skipping: %#v", registerModule, val.Type)
+			return nil, nil
+		}
+		caddyModuleIdent = ident
 
 	case *ast.CallExpr:
 		// happens with `caddy.RegisterModule(new(Gizmo))`
 		if funIdent, ok := val.Fun.(*ast.Ident); ok && funIdent.Name == "new" {
-			caddyModuleIdent = val.Args[0].(*ast.Ident)
+			ident, ok := val.Args[0].(*ast.Ident)
+			if !ok {
+				log.Printf("[WARNING] %s() argument type is not declared in this package; skipping: %#v", registerModule, val.Args[0])
+				return nil, nil
+			}
+			caddyModuleIdent = ident
 		} else {
 			return nil, fmt.Errorf("unknown function call in %s(): %#v - only support new()",
 				registerModule, val.Fun)
@@ -252,7 +270,11 @@ func (ds *Driver) findModuleImpl(fnDecl *ast.FuncDecl) (*ast.Ident, error) {
 	case *ast.Ident:
 		receiver = val
 	case *ast.StarExpr:
-		receiver = val.X.(*ast.Ident)
+		ident, ok := val.X.(*ast.Ident)
+		if !ok {
+			return nil, fmt.Errorf("expected identifier for pointer receiver type, but got %#v", val.X)
+		}
+		receiver = ident
 	default:
 		return nil, fmt.Errorf("expected identifier or pointer for receiver type, but got %#v", fnDecl.Recv.List[0].Type)
 	}

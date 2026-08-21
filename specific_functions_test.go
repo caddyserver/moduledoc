@@ -272,7 +272,8 @@ func TestStorageSpecificFunctions(t *testing.T) {
 			{`json:"name,omitempty"`, "name", true},
 			{`json:",omitempty"`, "", true},
 			{`json:"-"`, "", false},
-			{`json:"-,omitempty"`, "", false},
+			// per encoding/json, only exactly "-" excludes; this names the field "-"
+			{`json:"-,omitempty"`, "-", true},
 			{`json:"name,required"`, "name", true},
 			{`other:"value" json:"field"`, "field", true},
 			{`other:"value"`, "", true},

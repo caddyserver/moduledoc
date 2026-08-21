@@ -26,10 +26,9 @@ import (
 // If there is no dot, then before will be empty string and after
 // will be the input. Examples:
 //
-//     "github.com/caddyserver/caddy/v2.Config" => ("github.com/caddyserver/caddy/v2", "Config")
-//     "http.handlers.file_server"              => ("http.handlers", "file_server")
-//     "http"                                   => ("", "http")
-//
+//	"github.com/caddyserver/caddy/v2.Config" => ("github.com/caddyserver/caddy/v2", "Config")
+//	"http.handlers.file_server"              => ("http.handlers", "file_server")
+//	"http"                                   => ("", "http")
 func SplitLastDot(input string) (before, after string) {
 	lastDot := strings.LastIndex(input, ".")
 	if lastDot < 0 {
@@ -52,11 +51,13 @@ func ConfigPathParts(configPath string) []string {
 // by the encoding/json package), then false is returned.
 func jsonNameFromTag(tagStr string) (string, bool) {
 	jsonName := reflect.StructTag(tagStr).Get("json")
-	if commaIdx := strings.Index(jsonName, ","); commaIdx > 0 {
-		jsonName = strings.TrimSpace(jsonName[:commaIdx])
-	}
+	// per encoding/json, only a tag of exactly "-" excludes the field;
+	// "-," names the field "-"
 	if jsonName == "-" {
 		return "", false
+	}
+	if commaIdx := strings.Index(jsonName, ","); commaIdx >= 0 {
+		jsonName = strings.TrimSpace(jsonName[:commaIdx])
 	}
 	return jsonName, true
 }
