@@ -40,8 +40,8 @@ Implement `Storage` for caching - methods: `GetTypeByName`, `GetTypesByCaddyModu
 ## Testing Patterns
 
 ### Test Structure
-- Two suites: baseline tests (pass on current behavior, document limitations) and the edge-case suite (assert correct behavior; intentionally RED until the tracked bug is fixed)
-- Do not "fix" a red edge-case test by weakening its assertions; fix the source bug it tracks
+- Two suites: baseline tests (document behavior and limitations) and the edge-case suite (assert correct behavior)
+- Do not weaken an edge-case test's assertions to make it pass; fix the source bug instead
 - Use `testdata/` fixture packages (one per directory) with minimal Caddy module examples
 - Load packages with full AST/types info: `packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo`
 - Set `CGO_ENABLED=0` in test environments to avoid "no metadata for C" errors
@@ -86,15 +86,14 @@ None. An earlier version of this document claimed fixes (mutex locking, LRU cach
 
 ## Known Limitations & Open Bugs
 
-- **Not thread-safe**: `Driver.mu` is declared but never used; `discoveredTypes` is accessed without locking (confirmed data race). `dereference` mutates Storage-owned values in place, making concurrent `LoadTypesByModuleID` racy as well.
-- **Static module IDs only**: IDs computed from constants or expressions (e.g. `caddy.ModuleID("prefix" + suffix)`) are silently skipped with a warning; only `*ast.BasicLit` string literals are supported.
-- **Panics on edge inputs**: `TraverseType` panics on unknown module IDs (`vals[0]` without a length check); unchecked AST type assertions panic on inputs like `caddy.RegisterModule(otherpkg.Type{})`.
-- **No recursion guards**: self-referential types cause stack overflows in both `buildRepresentation` and `deepDereference`.
-- **Hard failures on unknown types**: chan/func/generic fields error out the whole containing type; no fallback representation.
+Most bugs found by the 2026-08 edge-case suite were fixed on 2026-08-22 (mutex-protected `discoveredTypes`, no-panic `TraverseType`, constant module ID evaluation, checked AST assertions, cycle guards, non-mutating `dereference` via `Value.clone()`, empty-value fallback for chan/func/generic fields). Remaining limitations:
+
+- **Runtime-computed module IDs**: only constant expressions are supported (evaluated via `go/types`); IDs computed at runtime are skipped with a warning.
+- **Recursive types in deep dereference**: `deepDereference` detects `SameAs` cycles and returns a `circular type reference` error rather than resolving them.
 - **Unbounded caches**: per-workspace package caches have no TTL, size limit, or eviction (memory-growth issue only; access is properly locked).
 - **Strict validation**: one incomplete module (registration without implementation, or vice versa) fails the entire package load.
 
 ## Development Notes
 - Requires Go toolchain installed (uses `go` commands directly)
-- **NOT thread-safe** — do not share a Driver or workspace across goroutines until the tracked races are fixed
-- Caching is per-workspace and unbounded (no eviction); the Driver's `discoveredTypes` type cache is unsynchronized
+- Driver is safe for concurrent use: `discoveredTypes` is mutex-protected and `dereference` works on deep copies (`Value.clone()`)
+- Caching is per-workspace and unbounded (no eviction)
