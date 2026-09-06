@@ -83,7 +83,7 @@ func fullyQualifiedTypeName(typ types.Type) string {
 // name and the local type name of typ. It must be a named
 // type.
 func typePackageAndName(typ types.Type) (pkgPath, typeName string) {
-	if nt, ok := typ.(*types.Named); ok {
+	if nt, ok := types.Unalias(typ).(*types.Named); ok {
 		// TODO: should be Pkg().Name() instead?
 		return nt.Obj().Pkg().Path(), nt.Obj().Name()
 	}
@@ -93,7 +93,7 @@ func typePackageAndName(typ types.Type) (pkgPath, typeName string) {
 // localTypeName returns the local type name of typ,
 // which must be a named type.
 func localTypeName(typ types.Type) string {
-	if nt, ok := typ.(*types.Named); ok {
+	if nt, ok := types.Unalias(typ).(*types.Named); ok {
 		return nt.Obj().Name()
 	}
 	return ""

@@ -63,7 +63,11 @@ type goListOutput struct {
 func (rb representationBuilder) getStructFieldGodocs(typ types.Type) (map[string]string, error) {
 	packagePath, typeName := typePackageAndName(typ)
 
-	typeVersion, err := rb.getDepVersion(typ.(*types.Named))
+	named, ok := types.Unalias(typ).(*types.Named)
+	if !ok {
+		return nil, fmt.Errorf("expected named type, got %T", typ)
+	}
+	typeVersion, err := rb.getDepVersion(named)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +117,11 @@ func (rb representationBuilder) getStructFieldGodocs(typ types.Type) (map[string
 func (rb representationBuilder) getGodocForType(typ types.Type) (string, error) {
 	packagePath, typeName := typePackageAndName(typ)
 
-	typeVersion, err := rb.getDepVersion(typ.(*types.Named))
+	named, ok := types.Unalias(typ).(*types.Named)
+	if !ok {
+		return "", fmt.Errorf("expected named type, got %T", typ)
+	}
+	typeVersion, err := rb.getDepVersion(named)
 	if err != nil {
 		return "", err
 	}
@@ -171,6 +179,9 @@ type representationBuilder struct {
 // and thus use to render documentation for the type.
 func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) (*Value, error) {
 	var rep *Value
+
+	// Go 1.23+ materialises type-alias declarations as *types.Alias; unwrap so the switches below match on the target.
+	caddyModuleType = types.Unalias(caddyModuleType)
 
 	switch typ := caddyModuleType.(type) {
 	case *types.Interface:
