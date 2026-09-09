@@ -317,11 +317,20 @@ func TestStorageSpecificFunctions(t *testing.T) {
 	})
 
 	t.Run("TypeUtilityFunctions", func(t *testing.T) {
-		// Test the type utility functions with mock data
-		t.Log("Testing type utility functions:")
-		t.Log("- fullyQualifiedTypeName: creates FQTN from types.Type")
-		t.Log("- typePackageAndName: splits package and type name")
-		t.Log("- localTypeName: extracts just the type name")
-		t.Log("These functions work with types.Named objects from real packages")
+		pkg := types.NewPackage("example.com/pkg", "pkg")
+		named := types.NewNamed(
+			types.NewTypeName(0, pkg, "Thing", nil),
+			types.Typ[types.String], nil,
+		)
+
+		if got := fullyQualifiedTypeName(named); got != "example.com/pkg.Thing" {
+			t.Errorf("fullyQualifiedTypeName = %q; want %q", got, "example.com/pkg.Thing")
+		}
+		if p, n := typePackageAndName(named); p != "example.com/pkg" || n != "Thing" {
+			t.Errorf("typePackageAndName = (%q, %q); want (%q, %q)", p, n, "example.com/pkg", "Thing")
+		}
+		if got := localTypeName(named); got != "Thing" {
+			t.Errorf("localTypeName = %q; want %q", got, "Thing")
+		}
 	})
 }

@@ -102,39 +102,26 @@ go 1.19
 		defer ws.Close()
 
 		rb := ws.representationBuilder()
-
-		t.Log("Testing representationBuilder version cache:")
-		t.Log("- versionCache map stores package path -> version")
-		t.Log("- Hierarchical lookup checks parent packages")
-		t.Log("- Cache avoids repeated 'go list' calls")
-
-		// Test cache initialization
 		if rb.versionCache == nil {
-			t.Error("versionCache should be initialized")
-		} else {
-			initialSize := len(rb.versionCache)
-			t.Logf("✓ versionCache initialized with %d entries", initialSize)
+			t.Fatal("versionCache should be initialized")
+		}
 
-			// Test manual cache entry
-			testPkg := "example.com/test/subpackage"
-			testVersion := "v1.2.3"
-			rb.versionCache[testPkg] = testVersion
+		// standard library types resolve to an empty version and are
+		// cached under their import path
+		stdType := types.NewNamed(
+			types.NewTypeName(0, types.NewPackage("encoding/json", "json"), "RawMessage", nil),
+			types.NewSlice(types.Typ[types.Byte]), nil,
+		)
 
-			// Test hierarchical lookup behavior
-			parts := strings.Split(testPkg, "/")
-			for i := len(parts); i > 0; i-- {
-				parent := strings.Join(parts[:i], "/")
-				if version, ok := rb.versionCache[parent]; ok {
-					t.Logf("✓ Found cached version for parent %s: %s", parent, version)
-					break
-				}
-			}
-
-			if len(rb.versionCache) != initialSize+1 {
-				t.Error("Cache should have grown by 1")
-			} else {
-				t.Log("✓ Cache grows as expected")
-			}
+		version, err := rb.getDepVersion(stdType)
+		if err != nil {
+			t.Fatalf("getDepVersion failed for stdlib type: %v", err)
+		}
+		if version != "" {
+			t.Errorf("stdlib types should have empty version, got %q", version)
+		}
+		if _, ok := rb.versionCache["encoding/json"]; !ok {
+			t.Error("stdlib version should be cached under the import path")
 		}
 	})
 }
@@ -274,22 +261,22 @@ func TestBuildRepresentationWithRealTypes(t *testing.T) {
 		// Test channel type
 		stringType := types.Typ[types.String]
 		chanType := types.NewChan(types.SendRecv, stringType)
-		_, err = rb.buildRepresentation(chanType)
+		rep, err := rb.buildRepresentation(chanType)
 		if err != nil {
-			t.Logf("✓ Current behavior: channel type rejected: %v", err)
-			if strings.Contains(err.Error(), "unknown type") {
-				t.Log("✓ Error message indicates unknown type")
-			}
+			t.Errorf("channel type should fall back gracefully, got error: %v", err)
+		} else if rep == nil {
+			t.Error("expected non-nil fallback representation for channel type")
 		} else {
-			// a graceful fallback is an acceptable future behavior
 			t.Log("✓ Graceful fallback for channel type")
 		}
 
 		// Test function type
 		sig := types.NewSignature(nil, types.NewTuple(), types.NewTuple(), false)
-		_, err = rb.buildRepresentation(sig)
+		rep, err = rb.buildRepresentation(sig)
 		if err != nil {
-			t.Logf("✓ Current behavior: function type rejected: %v", err)
+			t.Errorf("function type should fall back gracefully, got error: %v", err)
+		} else if rep == nil {
+			t.Error("expected non-nil fallback representation for function type")
 		} else {
 			t.Log("✓ Graceful fallback for function type")
 		}
@@ -298,23 +285,22 @@ func TestBuildRepresentationWithRealTypes(t *testing.T) {
 
 // TestCaddyCorePackagePathConstant tests the constant usage
 func TestCaddyCorePackagePathConstant(t *testing.T) {
-	t.Log("Testing caddyCorePackagePath constant:")
-
 	expectedPath := "github.com/caddyserver/caddy/v2"
 	if caddyCorePackagePath != expectedPath {
 		t.Errorf("Expected caddyCorePackagePath=%q, got %q", expectedPath, caddyCorePackagePath)
-	} else {
-		t.Log("✓ caddyCorePackagePath constant correct")
 	}
-
-	// Test that it's used consistently in the codebase
-	t.Log("- Used for identifying Caddy core modules")
-	t.Log("- Version /v2 indicates Caddy 2.x compatibility")
-	t.Log("- Critical for module validation and detection")
 }
 
 // TestSynthesisErrorHandlingOriginalBehavior tests error conditions
 func TestSynthesisErrorHandlingOriginalBehavior(t *testing.T) {
+	// a type whose package cannot be resolved by go list
+	missingType := func() *types.Named {
+		return types.NewNamed(
+			types.NewTypeName(0, types.NewPackage("invalid.example/does/not/exist", "exist"), "Ghost", nil),
+			types.Typ[types.String], nil,
+		)
+	}
+
 	t.Run("GetStructFieldGodocsErrors", func(t *testing.T) {
 		driver := New(nil)
 		ws, err := driver.openWorkspace()
@@ -323,15 +309,10 @@ func TestSynthesisErrorHandlingOriginalBehavior(t *testing.T) {
 		}
 		defer ws.Close()
 
-		t.Log("Testing getStructFieldGodocs error handling:")
-		t.Log("- Expects *types.Named input (panics on others)")
-		t.Log("- Returns error if package loading fails")
-		t.Log("- Returns error if struct type not found")
-
-		// This would panic in original implementation with non-Named types
-		// We document the behavior without triggering the panic
-		t.Log("Original limitation: panics if typ is not *types.Named")
-		t.Log("Original limitation: no graceful handling of package load failures")
+		rb := ws.representationBuilder()
+		if _, err := rb.getStructFieldGodocs(missingType()); err == nil {
+			t.Error("expected error for unresolvable package")
+		}
 	})
 
 	t.Run("GetGodocForTypeErrors", func(t *testing.T) {
@@ -342,14 +323,10 @@ func TestSynthesisErrorHandlingOriginalBehavior(t *testing.T) {
 		}
 		defer ws.Close()
 
-		t.Log("Testing getGodocForType error handling:")
-		t.Log("- Expects *types.Named input (panics on others)")
-		t.Log("- Returns error if type not found in package")
-		t.Log("- Returns empty string if no documentation found")
-
-		// Document original behavior limitations
-		t.Log("Original limitation: panics if typ is not *types.Named")
-		t.Log("Original limitation: no fallback for missing documentation")
+		rb := ws.representationBuilder()
+		if _, err := rb.getGodocForType(missingType()); err == nil {
+			t.Error("expected error for unresolvable package")
+		}
 	})
 
 	t.Run("GetDepVersionErrors", func(t *testing.T) {
@@ -360,14 +337,9 @@ func TestSynthesisErrorHandlingOriginalBehavior(t *testing.T) {
 		}
 		defer ws.Close()
 
-		t.Log("Testing getDepVersion error handling:")
-		t.Log("- Returns error if package path cannot be determined")
-		t.Log("- Returns error if 'go list' command fails")
-		t.Log("- No timeout or cancellation for shell commands")
-
-		// Document the TODO comment behavior
-		t.Log("Original TODO: 'we could probably ignore this error, but let's see...'")
-		t.Log("Original limitation: synchronous shell command execution")
-		t.Log("Original limitation: no retry logic for transient failures")
+		rb := ws.representationBuilder()
+		if _, err := rb.getDepVersion(missingType()); err == nil {
+			t.Error("expected error when go list cannot resolve the package")
+		}
 	})
 }

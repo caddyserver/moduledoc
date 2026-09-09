@@ -87,14 +87,13 @@ func TestSynthesisOriginalBehavior(t *testing.T) {
 		chanType := types.NewChan(types.SendRecv, types.Typ[types.String])
 		rep, err := rb.buildRepresentation(chanType)
 
-		// today this hard-fails; a graceful fallback representation would
-		// also be acceptable — only a nil result without error is wrong
+		// types with no JSON representation get an empty fallback value
 		if err != nil {
-			t.Logf("✓ Current behavior: hard failure on unknown type (channel): %v", err)
-		} else if rep != nil {
-			t.Logf("✓ Graceful fallback for channel type: %+v", rep)
+			t.Errorf("channel type should fall back gracefully, got error: %v", err)
+		} else if rep == nil {
+			t.Error("expected non-nil fallback representation for channel type")
 		} else {
-			t.Error("buildRepresentation returned neither error nor representation for channel type")
+			t.Logf("✓ Graceful fallback for channel type: %+v", rep)
 		}
 	})
 
@@ -112,17 +111,24 @@ func TestSynthesisOriginalBehavior(t *testing.T) {
 		// Verify the version cache is initialized
 		if rb.versionCache == nil {
 			t.Error("Version cache not initialized in representationBuilder")
-		} else {
-			t.Log("✓ Version cache initialized correctly")
 		}
 
-		// This tests the internal caching but we can't easily test without
-		// actual packages, so we document the behavior
-		t.Log("Original getDepVersion behavior:")
-		t.Log("- Caches module versions by package path")
-		t.Log("- Uses go list to determine version information")
-		t.Log("- No cache eviction or size limits")
-		t.Log("- Cache grows unbounded with package usage")
+		// hierarchical lookup: a type in a subpackage resolves to its cached
+		// parent module version without invoking go list
+		rb.versionCache["example.com/mod"] = "v1.2.3"
+		pkg := types.NewPackage("example.com/mod/sub/pkg", "pkg")
+		named := types.NewNamed(
+			types.NewTypeName(0, pkg, "Thing", nil),
+			types.Typ[types.String], nil,
+		)
+
+		version, err := rb.getDepVersion(named)
+		if err != nil {
+			t.Fatalf("getDepVersion failed: %v", err)
+		}
+		if version != "v1.2.3" {
+			t.Errorf("expected cached parent version v1.2.3, got %q", version)
+		}
 	})
 }
 
@@ -208,10 +214,10 @@ func TestWorkspaceOriginalBehavior(t *testing.T) {
 		}
 		defer ws.Close()
 
-		t.Log("Original workspace concurrency:")
+		t.Log("Workspace concurrency:")
 		t.Log("- Has sync.RWMutex for workspace operations")
 		t.Log("- Protects goGets map and package operations")
-		t.Log("- But Driver.discoveredTypes has no protection (race condition)")
+		t.Log("- Driver.discoveredTypes is protected by its own mutex")
 
 		// The workspace itself is properly protected, but the driver cache is not
 		testKey := "concurrent/test"

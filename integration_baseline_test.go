@@ -1,6 +1,7 @@
 package moduledoc
 
 import (
+	"go/types"
 	"testing"
 )
 
@@ -163,25 +164,26 @@ func TestIntegrationOriginalBehavior(t *testing.T) {
 		}
 		defer ws.Close()
 
-		// Test the caching behavior by examining the discoveredTypes map
-		initialCacheSize := len(driver.discoveredTypes)
-		t.Logf("Initial cache size: %d", initialCacheSize)
+		rb := ws.representationBuilder()
 
-		// The cache is accessed without locking in the original implementation
-		// This is the race condition we documented
-		t.Log("Original cache access pattern:")
-		t.Log("- discoveredTypes map accessed without mutex protection")
-		t.Log("- Race condition confirmed by TODO comment")
-		t.Log("- Cache grows unbounded during synthesis")
+		// a type already in the driver cache is returned as a reference
+		// without loading its package or touching storage
+		pkg := types.NewPackage("example.com/fake", "fake")
+		named := types.NewNamed(
+			types.NewTypeName(0, pkg, "Thing", nil),
+			types.Typ[types.String], nil,
+		)
 
-		// Demonstrate direct cache access (original behavior)
-		testKey := "test.example/Type@v1.0.0"
-		driver.discoveredTypes[testKey] = &Value{Type: String, TypeName: testKey}
+		rb.versionCache["example.com/fake"] = "v1.0.0"
+		sameAs := "example.com/fake.Thing@v1.0.0"
+		driver.setDiscoveredType(sameAs, &Value{Type: String, TypeName: "example.com/fake.Thing"})
 
-		if len(driver.discoveredTypes) != initialCacheSize+1 {
-			t.Error("Cache size should have increased")
-		} else {
-			t.Log("✓ Cache grows as expected (without synchronization)")
+		rep, err := rb.buildRepresentation(named)
+		if err != nil {
+			t.Fatalf("buildRepresentation failed: %v", err)
+		}
+		if rep.SameAs != sameAs {
+			t.Errorf("expected cache hit returning reference %q, got %+v", sameAs, rep)
 		}
 	})
 }
@@ -189,7 +191,7 @@ func TestIntegrationOriginalBehavior(t *testing.T) {
 // TestModuleValidationIntegration tests the strict validation behavior
 func TestModuleValidationIntegration(t *testing.T) {
 	t.Run("OriginalStrictValidation", func(t *testing.T) {
-		// Create a package with mixed valid/invalid modules to test validation
+		// fully compliant module: registration + implementation + static ID
 		validSource := `
 package test
 
@@ -208,18 +210,7 @@ func (*ValidModule) CaddyModule() caddy.ModuleInfo {
 	}
 }
 `
-
-		// Test that original validation requires perfect compliance
-		t.Log("Original validation behavior:")
-		t.Log("- findCaddyModuleIdents requires exact match between registration and implementation")
-		t.Log("- Missing registration causes hard error")
-		t.Log("- Missing implementation causes hard error")
-		t.Log("- Non-static module IDs are skipped with warning")
-		t.Log("- No graceful degradation for partial compliance")
-
-		// We can't easily test this without creating temporary files,
-		// but the behavior is documented by the code structure
-		_ = validSource
+		testModuleSource(t, validSource, true, "Compliant module should be detected")
 	})
 }
 
