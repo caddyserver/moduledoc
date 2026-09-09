@@ -1,0 +1,86 @@
+# Used as inspiration: https://github.com/caddyserver/caddy/blob/master/.github/workflows/ci.yml
+
+name: Tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+env:
+  # https://github.com/actions/setup-go/issues/491
+  GOTOOLCHAIN: local
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      # Default is true, cancels jobs for other platforms in the matrix if one fails
+      fail-fast: false
+      matrix:
+        os:
+          - linux
+        go:
+          - '1.27'
+
+        include:
+        # Set the minimum Go patch version for the given Go minor
+        # Usable via ${{ matrix.GO_SEMVER }}
+        - go: '1.27'
+          GO_SEMVER: '~1.27.0'
+
+        # Set some variables per OS, usable via ${{ matrix.VAR }}
+        # OS_LABEL: the VM label from GitHub Actions
+        - os: linux
+          OS_LABEL: ubuntu-latest
+
+    runs-on: ${{ matrix.OS_LABEL }}
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+    - name: Harden the runner (Audit all outbound calls)
+      uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+      with:
+        egress-policy: audit
+
+    - name: Checkout code
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+    - name: Install Go
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      with:
+        go-version: ${{ matrix.GO_SEMVER }}
+        check-latest: true
+
+    - name: Print Go version and environment
+      shell: bash
+      run: |
+        printf "Using go at: $(which go)\n"
+        printf "Go version: $(go version)\n"
+        printf "\n\nGo environment:\n\n"
+        go env
+        printf "\n\nSystem environment:\n\n"
+        env
+        printf "Git version: $(git version)\n\n"
+
+    - name: Get dependencies
+      run: |
+        go get -v -t -d ./...
+
+    - name: Run vet
+      run: |
+        go vet ./...
+
+    # The test suite loads packages with the Go toolchain and sets
+    # CGO_ENABLED=0 itself where needed; the race detector requires
+    # cgo, so CGO_ENABLED is not forced off here.
+    - name: Run tests
+      run: |
+        go test -short -race ./...

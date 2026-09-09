@@ -15,8 +15,6 @@
 package moduledoc
 
 import (
-	"errors"
-	"fmt"
 	"go/types"
 	"sync"
 	"testing"
@@ -79,39 +77,4 @@ func newTestBuilder(t *testing.T, pkg *packages.Package) representationBuilder {
 	rb := ws.representationBuilder()
 	rb.versionCache[pkg.PkgPath] = ""
 	return rb
-}
-
-// memStorage is an in-memory Storage implementation for tests.
-type memStorage struct {
-	mu    sync.Mutex
-	types map[string]*Value
-}
-
-func newMemStorage() *memStorage {
-	return &memStorage{types: map[string]*Value{}}
-}
-
-func (m *memStorage) key(pkgPath, name, version string) string {
-	return fmt.Sprintf("%s|%s|%s", pkgPath, name, version)
-}
-
-func (m *memStorage) GetTypeByName(packagePath, name, version string) (*Value, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.types[m.key(packagePath, name, version)], nil
-}
-
-func (m *memStorage) GetTypesByCaddyModuleID(caddyModuleID string) ([]*Value, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (m *memStorage) StoreType(packagePath, typeName, version string, rep *Value) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.types[m.key(packagePath, typeName, version)] = rep
-	return nil
-}
-
-func (m *memStorage) SetCaddyModuleName(pkg *packages.Package, typeName, modName string) error {
-	return nil
 }
