@@ -237,7 +237,10 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 		}
 
 		// a json.RawMessage type represents a module!
-		if packagePath == "encoding/json" && typeName == "RawMessage" {
+		// (json.RawMessage is an alias for jsontext.Value as of the
+		// json/v2 stdlib, and aliases are unwrapped above)
+		if (packagePath == "encoding/json" && typeName == "RawMessage") ||
+			(packagePath == "encoding/json/jsontext" && typeName == "Value") {
 			return &Value{Type: Module}, nil
 		}
 
