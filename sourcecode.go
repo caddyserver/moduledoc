@@ -193,12 +193,16 @@ func (ds *Driver) findModuleRegistration(pkg *packages.Package, fnCall *ast.Call
 		if !ok {
 			return nil, nil
 		}
-		if pkgName, ok := pkg.TypesInfo.Uses[x].(*types.PkgName); ok {
-			importedPkg := pkgName.Imported()
-			if importedPkg.Path() != caddyCorePackagePath {
-				return nil, fmt.Errorf("%s call does not resolve to %s; resolves to: %s",
-					registerModule, caddyCorePackagePath, importedPkg.Path())
-			}
+		pkgName, ok := pkg.TypesInfo.Uses[x].(*types.PkgName)
+		if !ok {
+			// A method on a value, such as gopher-lua's L.RegisterModule,
+			// is not a call to the Caddy package's registration function.
+			return nil, nil
+		}
+		importedPkg := pkgName.Imported()
+		if importedPkg.Path() != caddyCorePackagePath {
+			return nil, fmt.Errorf("%s call does not resolve to %s; resolves to: %s",
+				registerModule, caddyCorePackagePath, importedPkg.Path())
 		}
 	default:
 		return nil, nil
