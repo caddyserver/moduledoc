@@ -1,6 +1,9 @@
 // Package unregistered pairs one fully compliant module with one type
 // that implements CaddyModule but is never registered, exercising the
 // strict validation that fails an entire package on partial compliance.
+//
+// Expected: findCaddyModuleIdents returns an error for the whole
+// package, even though Good is otherwise fully compliant.
 package unregistered
 
 import "github.com/caddyserver/caddy/v2"

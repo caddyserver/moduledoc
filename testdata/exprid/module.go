@@ -1,6 +1,9 @@
 // Package exprid is a module whose ID is built from concatenating a
 // package-level constant with a string literal, exercising constant
 // binary-expression evaluation in module ID discovery.
+//
+// Expected: findCaddyModuleIdents discovers ExprWidget as
+// "app.namespace.expr_widget".
 package exprid
 
 import "github.com/caddyserver/caddy/v2"

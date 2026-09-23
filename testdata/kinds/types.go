@@ -4,6 +4,15 @@
 // module (with namespace/inline_key tags), embedded field promotion,
 // named vs. inline anonymous structs, self-referential types, and
 // field kinds with no JSON representation (chan, func).
+//
+// Expected (see synthesis_edge_test.go): Hidden, unexported, and
+// Embedded are absent from the built representation; DoublePtr
+// resolves to Int; Lookup is a Map with Int keys; Anything is an
+// empty Value; Raw is a Module with namespace "widget.raw" and
+// inline key "kind"; RawMap is a ModuleMap; Extra is promoted onto
+// the parent struct; Nested is stored and referenced by name; Inline
+// is represented with its own fields; Node builds without recursing
+// forever; Tricky's chan/func fields build without erroring.
 package kinds
 
 import "encoding/json"
