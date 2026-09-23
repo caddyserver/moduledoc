@@ -26,15 +26,8 @@ import (
 func loadAliasesFixture(t *testing.T) *packages.Package {
 	t.Helper()
 	cfg := &packages.Config{
-		Mode: packages.NeedName |
-			packages.NeedFiles |
-			packages.NeedImports |
-			packages.NeedDeps |
-			packages.NeedTypes |
-			packages.NeedTypesInfo |
-			packages.NeedSyntax |
-			packages.NeedModule,
-		Dir: "testdata/aliases",
+		Mode: packagesLoadMode,
+		Dir:  "testdata/aliases",
 	}
 	pkgs, err := packages.Load(cfg, ".")
 	if err != nil {

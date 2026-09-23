@@ -12,14 +12,9 @@ func TestOriginalBehaviorBaseline(t *testing.T) {
 	t.Run("ValidStaticModule", func(t *testing.T) {
 		// Test only the gizmo.go file which should work
 		cfg := &packages.Config{
-			Dir: ".",
-			Mode: packages.NeedSyntax |
-				packages.NeedImports |
-				packages.NeedDeps |
-				packages.NeedTypes |
-				packages.NeedModule |
-				packages.NeedTypesInfo,
-			Env: append(os.Environ(), "CGO_ENABLED=0"),
+			Dir:  ".",
+			Mode: packagesLoadMode,
+			Env:  append(os.Environ(), "CGO_ENABLED=0"),
 		}
 
 		pkgs, err := packages.Load(cfg, "./testdata")

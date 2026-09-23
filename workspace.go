@@ -46,6 +46,17 @@ type workspace struct {
 	parsedPackages map[string]*packages.Package
 }
 
+// packagesLoadMode is the packages.Config.Mode used wherever we need
+// full syntax and type information to inspect Caddy modules.
+const packagesLoadMode = packages.NeedName |
+	packages.NeedFiles |
+	packages.NeedSyntax |
+	packages.NeedImports |
+	packages.NeedDeps |
+	packages.NeedTypes |
+	packages.NeedTypesInfo |
+	packages.NeedModule
+
 func (d *Driver) openWorkspace() (workspace, error) {
 	tempDir, err := ioutil.TempDir("", "caddy_docsys_")
 	if err != nil {
@@ -121,13 +132,8 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 
 	// finally, load and parse the package
 	cfg := &packages.Config{
-		Dir: ws.dir,
-		Mode: packages.NeedSyntax |
-			packages.NeedImports |
-			packages.NeedDeps |
-			packages.NeedTypes |
-			packages.NeedModule |
-			packages.NeedTypesInfo,
+		Dir:  ws.dir,
+		Mode: packagesLoadMode,
 
 		// on Linux, leaving CGO_ENABLED to the default value of 1 would
 		// cause an error: "could not import C (no metadata for C)", but

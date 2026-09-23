@@ -129,14 +129,9 @@ func TestSynthesisSpecificFunctions(t *testing.T) {
 	t.Run("GetStructFieldGodocs", func(t *testing.T) {
 		// Test getStructFieldGodocs with real testdata
 		cfg := &packages.Config{
-			Dir: "testdata",
-			Mode: packages.NeedSyntax |
-				packages.NeedImports |
-				packages.NeedDeps |
-				packages.NeedTypes |
-				packages.NeedModule |
-				packages.NeedTypesInfo,
-			Env: append(os.Environ(), "CGO_ENABLED=0"),
+			Dir:  "testdata",
+			Mode: packagesLoadMode,
+			Env:  append(os.Environ(), "CGO_ENABLED=0"),
 		}
 
 		pkgs, err := packages.Load(cfg, "testdata")
@@ -184,14 +179,9 @@ func TestSynthesisSpecificFunctions(t *testing.T) {
 	t.Run("GetGodocForType", func(t *testing.T) {
 		// Test getGodocForType with testdata
 		cfg := &packages.Config{
-			Dir: "testdata",
-			Mode: packages.NeedSyntax |
-				packages.NeedImports |
-				packages.NeedDeps |
-				packages.NeedTypes |
-				packages.NeedModule |
-				packages.NeedTypesInfo,
-			Env: append(os.Environ(), "CGO_ENABLED=0"),
+			Dir:  "testdata",
+			Mode: packagesLoadMode,
+			Env:  append(os.Environ(), "CGO_ENABLED=0"),
 		}
 
 		pkgs, err := packages.Load(cfg, "testdata")

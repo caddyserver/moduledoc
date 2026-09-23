@@ -14,13 +14,8 @@ func loadFixturePackage(t *testing.T, pattern string) *packages.Package {
 		t.Skip("requires the Go toolchain")
 	}
 	cfg := &packages.Config{
-		Mode: packages.NeedName |
-			packages.NeedSyntax |
-			packages.NeedTypes |
-			packages.NeedTypesInfo |
-			packages.NeedImports |
-			packages.NeedDeps,
-		Env: append(os.Environ(), "CGO_ENABLED=0"),
+		Mode: packagesLoadMode,
+		Env:  append(os.Environ(), "CGO_ENABLED=0"),
 	}
 	pkgs, err := packages.Load(cfg, pattern)
 	if err != nil {
