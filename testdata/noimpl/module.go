@@ -1,3 +1,6 @@
+// Package noimpl registers a type that satisfies caddy.Module only
+// through an embedded field, so the package has a registration but no
+// locally declared CaddyModule method.
 package noimpl
 
 import (

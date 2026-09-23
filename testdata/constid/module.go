@@ -1,3 +1,6 @@
+// Package constid is a module whose ID is a package-level constant
+// rather than a string literal, exercising constant-expression
+// evaluation in module ID discovery.
 package constid
 
 import "github.com/caddyserver/caddy/v2"

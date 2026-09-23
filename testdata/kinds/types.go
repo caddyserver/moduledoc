@@ -1,3 +1,9 @@
+// Package kinds exercises the struct field kinds moduledoc's type
+// synthesis must handle: pointer-to-pointer, unexported and json:"-"
+// fields, non-string map keys, interface{}, json.RawMessage as a Caddy
+// module (with namespace/inline_key tags), embedded field promotion,
+// named vs. inline anonymous structs, self-referential types, and
+// field kinds with no JSON representation (chan, func).
 package kinds
 
 import "encoding/json"

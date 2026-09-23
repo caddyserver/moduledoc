@@ -1,3 +1,6 @@
+// Package exprid is a module whose ID is built from concatenating a
+// package-level constant with a string literal, exercising constant
+// binary-expression evaluation in module ID discovery.
 package exprid
 
 import "github.com/caddyserver/caddy/v2"

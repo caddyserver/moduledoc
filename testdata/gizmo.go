@@ -1,3 +1,6 @@
+// Package testdata is the canonical minimal valid Caddy module: a
+// pointer-receiver type with both caddy.RegisterModule and CaddyModule,
+// and a static string literal module ID.
 package testdata
 
 import "github.com/caddyserver/caddy/v2"

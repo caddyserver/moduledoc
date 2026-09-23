@@ -1,3 +1,6 @@
+// Package crosspkg registers a type declared in another package
+// (a qualified composite literal, valuerecv.Sprocket{}), exercising
+// the AST handling of selector-expression registration arguments.
 package crosspkg
 
 import (
