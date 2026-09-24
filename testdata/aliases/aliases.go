@@ -1,6 +1,12 @@
 // Package aliases is a test fixture exercising type-alias handling in
 // moduledoc under Go 1.23+ (where go/types materialises aliases as
 // *types.Alias).
+//
+// Expected (see synthesis_test.go, utils_test.go): buildRepresentation
+// unwraps aliases so Config.Nested resolves to the Settings struct,
+// Config.Label resolves to a plain string, and Config.Items resolves
+// to a slice of the Item struct — the alias names themselves do not
+// appear as distinct types.
 package aliases
 
 // Settings holds nested configuration used to verify alias unwrapping.

@@ -221,7 +221,7 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 		if typeVersion != "" {
 			sameAs += "@" + typeVersion
 		}
-		if _, ok := rb.ws.driver.discoveredTypes[sameAs]; ok {
+		if _, ok := rb.ws.driver.discoveredType(sameAs); ok {
 			return &Value{SameAs: sameAs}, nil
 		}
 
@@ -232,14 +232,27 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 			return nil, err
 		}
 		if discoveredType != nil {
-			rb.ws.driver.discoveredTypes[sameAs] = discoveredType
+			rb.ws.driver.setDiscoveredType(sameAs, discoveredType)
 			return &Value{SameAs: discoveredType.TypeName}, nil
 		}
 
 		// a json.RawMessage type represents a module!
-		if packagePath == "encoding/json" && typeName == "RawMessage" {
+		// (json.RawMessage is an alias for jsontext.Value as of the
+		// json/v2 stdlib, and aliases are unwrapped above)
+		if (packagePath == "encoding/json" && typeName == "RawMessage") ||
+			(packagePath == "encoding/json/jsontext" && typeName == "Value") {
 			return &Value{Type: Module}, nil
 		}
+
+		// pre-register the type so self-referential fields resolve to a
+		// reference instead of recursing forever; removed again on failure
+		rb.ws.driver.setDiscoveredType(sameAs, new(Value))
+		stored := false
+		defer func() {
+			if !stored {
+				rb.ws.driver.deleteDiscoveredType(sameAs)
+			}
+		}()
 
 		// otherwise, if this type is new, store it in the DB
 		switch utyp := typ.Underlying().(type) {
@@ -323,7 +336,8 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 		rep.TypeName = fullTypeName
 
 		// remember this type so we don't have to re-assemble it all later
-		rb.ws.driver.discoveredTypes[sameAs] = rep
+		rb.ws.driver.setDiscoveredType(sameAs, rep)
+		stored = true
 		err = rb.ws.driver.db.StoreType(packagePath, typeName, typeVersion, rep)
 		if err != nil {
 			return nil, err
@@ -400,7 +414,10 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 		return nil, nil
 
 	default:
-		return nil, fmt.Errorf("unknown type %s: %#v", caddyModuleType.String(), caddyModuleType)
+		// types with no JSON representation (chan, func, generics, ...)
+		// must not fail the whole containing type; represent them like
+		// interfaces, as an empty value
+		return new(Value), nil
 	}
 }
 

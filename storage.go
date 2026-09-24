@@ -65,6 +65,10 @@ func (ds *Driver) dereference(val *Value) (*Value, error) {
 		return nil, fmt.Errorf("dereference failed, type not found: %s@%s", fqtn, version)
 	}
 
+	// work on a copy so the Storage-owned value is never mutated;
+	// otherwise context-specific info would bleed between dereferences
+	typ = typ.clone()
+
 	// transfer over the module namespace and inline key, since that
 	// information is specific to the context in which the type appears,
 	// thus the normalized stored type will not have that information;
@@ -91,6 +95,21 @@ func (ds *Driver) dereference(val *Value) (*Value, error) {
 // As a result, the returned value information is completely
 // dereferenced and filled out.
 func (ds *Driver) deepDereference(val *Value) (*Value, error) {
+	// clone so the caller's (or Storage's) value is never mutated
+	return ds.deepDereferenceRec(val.clone(), make(map[string]struct{}))
+}
+
+// deepDereferenceRec does the work of deepDereference, tracking the
+// references on the current resolution path to detect cycles.
+func (ds *Driver) deepDereferenceRec(val *Value, path map[string]struct{}) (*Value, error) {
+	if val.SameAs != "" {
+		if _, ok := path[val.SameAs]; ok {
+			return nil, fmt.Errorf("circular type reference: %s", val.SameAs)
+		}
+		path[val.SameAs] = struct{}{}
+		defer delete(path, val.SameAs)
+	}
+
 	var err error
 	val, err = ds.dereference(val)
 	if err != nil {
@@ -99,7 +118,7 @@ func (ds *Driver) deepDereference(val *Value) (*Value, error) {
 
 	// dereference all struct fields
 	for _, sf := range val.StructFields {
-		sf.Value, err = ds.deepDereference(sf.Value)
+		sf.Value, err = ds.deepDereferenceRec(sf.Value, path)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +147,7 @@ func (ds *Driver) deepDereference(val *Value) (*Value, error) {
 
 	// dereference all map keys
 	if val.MapKeys != nil {
-		val.MapKeys, err = ds.deepDereference(val.MapKeys)
+		val.MapKeys, err = ds.deepDereferenceRec(val.MapKeys, path)
 		if err != nil {
 			return nil, err
 		}
@@ -136,7 +155,7 @@ func (ds *Driver) deepDereference(val *Value) (*Value, error) {
 
 	// dereference all map or array elements
 	if val.Elems != nil {
-		val.Elems, err = ds.deepDereference(val.Elems)
+		val.Elems, err = ds.deepDereferenceRec(val.Elems, path)
 		if err != nil {
 			return nil, err
 		}
@@ -150,4 +169,34 @@ func (ds *Driver) deepDereference(val *Value) (*Value, error) {
 func (ds *Driver) getTypeByFullName(fqtn, version string) (*Value, error) {
 	pkgName, typeName := SplitLastDot(fqtn)
 	return ds.db.GetTypeByName(pkgName, typeName, version)
+}
+
+// clone returns a deep copy of v, so callers can freely
+// mutate the copy without affecting Storage-owned values.
+func (v *Value) clone() *Value {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	c.MapKeys = v.MapKeys.clone()
+	c.Elems = v.Elems.clone()
+	if v.StructFields != nil {
+		c.StructFields = make([]*StructField, len(v.StructFields))
+		for i, sf := range v.StructFields {
+			c.StructFields[i] = &StructField{
+				Key:   sf.Key,
+				Value: sf.Value.clone(),
+				Doc:   sf.Doc,
+			}
+		}
+	}
+	if v.ModuleNamespace != nil {
+		ns := *v.ModuleNamespace
+		c.ModuleNamespace = &ns
+	}
+	if v.ModuleInlineKey != nil {
+		ik := *v.ModuleInlineKey
+		c.ModuleInlineKey = &ik
+	}
+	return &c
 }

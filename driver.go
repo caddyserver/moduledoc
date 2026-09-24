@@ -30,12 +30,32 @@ import (
 type Driver struct {
 	db Storage
 
-	// TODO: use this, there's DEFINITELY A CONFIRMED race on discoveredTypes
+	// protects discoveredTypes
 	mu sync.RWMutex
 
 	// a cache of type definitions we've processed, keyed
 	// by the type's fqtn@version string.
 	discoveredTypes map[string]*Value
+}
+
+// discoveredType returns the cached type for key, if present.
+func (d *Driver) discoveredType(key string) (*Value, bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	val, ok := d.discoveredTypes[key]
+	return val, ok
+}
+
+func (d *Driver) setDiscoveredType(key string, val *Value) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.discoveredTypes[key] = val
+}
+
+func (d *Driver) deleteDiscoveredType(key string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.discoveredTypes, key)
 }
 
 // New constructs a new documentation system.
@@ -228,7 +248,10 @@ func (d *Driver) TraverseType(path string, start *Value) (val, nearestType *Valu
 			if err != nil {
 				return nil, nil, fmt.Errorf("loading type for module %s: %v", caddyModuleID, err)
 			}
-			val = vals[0] // TODO: support multiple values (two modules with same ID)... how? if in the middle, maybe find the one that matches; if at end...? maybe return a slice of them?
+			if len(vals) == 0 {
+				return nil, nil, fmt.Errorf("no module found with ID: %s", caddyModuleID)
+			}
+			val = vals[0].clone() // TODO: support multiple values (two modules with same ID)... how? if in the middle, maybe find the one that matches; if at end...? maybe return a slice of them?
 			val.ModuleInlineKey = moduleInlineKey
 
 		case Map, Array:
