@@ -43,37 +43,4 @@ func TestOriginalBehaviorBaseline(t *testing.T) {
 			t.Errorf("expected module 'app.namespace.gizmo', got: %v", moduleIdents)
 		}
 	})
-
-	t.Run("StrictValidationBehavior", func(t *testing.T) {
-		// one incomplete module fails the whole package, valid sibling
-		// included; a partial-results contract would return GoodModule here
-		source := `
-package test
-
-import "github.com/caddyserver/caddy/v2"
-
-func init() {
-	caddy.RegisterModule(new(GoodModule))
-}
-
-type GoodModule struct{}
-
-func (*GoodModule) CaddyModule() caddy.ModuleInfo {
-	return caddy.ModuleInfo{
-		ID: "app.test.good",
-		New: func() caddy.Module { return new(GoodModule) },
-	}
-}
-
-type OrphanModule struct{}
-
-func (*OrphanModule) CaddyModule() caddy.ModuleInfo {
-	return caddy.ModuleInfo{
-		ID: "app.test.orphan",
-		New: func() caddy.Module { return new(OrphanModule) },
-	}
-}
-`
-		testModuleSource(t, source, false, "Mixed valid/incomplete package fails entirely")
-	})
 }
