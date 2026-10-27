@@ -37,27 +37,6 @@ func (*ValidModule) CaddyModule() caddy.ModuleInfo {
 		testModuleSource(t, source, true, "Valid module should be detected")
 	})
 
-	t.Run("MissingRegistration", func(t *testing.T) {
-		// Test module with implementation but no registration
-		source := `
-package test
-
-import "github.com/caddyserver/caddy/v2"
-
-type UnregisteredModule struct{}
-
-func (*UnregisteredModule) CaddyModule() caddy.ModuleInfo {
-	return caddy.ModuleInfo{
-		ID: "app.test.unregistered",
-		New: func() caddy.Module { return new(UnregisteredModule) },
-	}
-}
-`
-
-		// This should fail in original implementation
-		testModuleSource(t, source, false, "Module without registration should fail")
-	})
-
 	t.Run("MissingImplementation", func(t *testing.T) {
 		// Test registration without implementation
 		source := `

@@ -1,6 +1,8 @@
 package moduledoc
 
 import (
+	"go/ast"
+	"go/parser"
 	"os"
 	"testing"
 
@@ -58,6 +60,53 @@ func TestFindModuleIdentsPointerAndValuePatterns(t *testing.T) {
 	got = identsByTypeName(t, d, pkg)
 	if got["Sprocket"] != "app.namespace.sprocket" {
 		t.Errorf("expected Sprocket module, got %#v", got)
+	}
+
+	pkg = loadFixturePackage(t, "./testdata/addrofliteral")
+	got = identsByTypeName(t, d, pkg)
+	if len(got) != 1 || got["Widget"] != "app.namespace.addr_widget" {
+		t.Errorf("expected Widget module registered via address-of composite literal, got %#v", got)
+	}
+}
+
+func TestFindModuleRegistrationArgumentForms(t *testing.T) {
+	tests := []struct {
+		name    string
+		arg     string
+		want    string
+		wantErr bool
+	}{
+		{name: "value literal", arg: "Widget{}", want: "Widget"},
+		{name: "new", arg: "new(Widget)", want: "Widget"},
+		{name: "address-of literal", arg: "&Widget{}", want: "Widget"},
+		{name: "initialized address-of literal", arg: "&Widget{Enabled: true}", want: "Widget"},
+		{name: "qualified address-of literal", arg: "&other.Widget{}"},
+		{name: "address-of variable", arg: "&widget", wantErr: true},
+		{name: "other unary operator", arg: "!Widget{}", wantErr: true},
+	}
+	d := New(nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			expr, err := parser.ParseExpr("RegisterModule(" + tt.arg + ")")
+			if err != nil {
+				t.Fatal(err)
+			}
+			call, ok := expr.(*ast.CallExpr)
+			if !ok {
+				t.Fatalf("expected call expression, got %T", expr)
+			}
+			ident, err := d.findModuleRegistration(&packages.Package{}, call)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("findModuleRegistration() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.want == "" {
+				if ident != nil {
+					t.Errorf("expected no identifier, got %s", ident.Name)
+				}
+			} else if ident == nil || ident.Name != tt.want {
+				t.Errorf("expected identifier %s, got %v", tt.want, ident)
+			}
+		})
 	}
 }
 

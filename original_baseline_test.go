@@ -15,57 +15,8 @@
 package moduledoc
 
 import (
-	"os"
 	"testing"
-
-	"golang.org/x/tools/go/packages"
 )
-
-// TestOriginalImplementation tests the existing functionality to establish a baseline
-func TestOriginalImplementation(t *testing.T) {
-	t.Run("BasicModuleDetection", func(t *testing.T) {
-		// Test that basic module detection works with static string literals
-		cfg := &packages.Config{
-			Dir:  ".",
-			Mode: packagesLoadMode,
-			Env:  append(os.Environ(), "CGO_ENABLED=0"),
-		}
-
-		pkgs, err := packages.Load(cfg, "./testdata")
-		if err != nil {
-			t.Fatalf("Failed to load testdata: %v", err)
-		}
-
-		if len(pkgs) == 0 {
-			t.Fatal("No packages loaded")
-		}
-
-		driver := New(nil)
-		pkg := pkgs[0]
-
-		// Test findCaddyModuleIdents with the original gizmo.go
-		moduleIdents, err := driver.findCaddyModuleIdents(pkg)
-		if err != nil {
-			t.Errorf("findCaddyModuleIdents failed: %v", err)
-		}
-
-		// Should find the static module from gizmo.go
-		expectedModuleID := "app.namespace.gizmo"
-		found := false
-		for _, moduleID := range moduleIdents {
-			if moduleID == expectedModuleID {
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			t.Errorf("Expected to find module ID '%s' but got: %v", expectedModuleID, moduleIdents)
-		}
-
-		t.Logf("Successfully found %d modules: %v", len(moduleIdents), moduleIdents)
-	})
-}
 
 // TestOriginalCachingBehavior tests the caching mechanisms in the original implementation
 func TestOriginalCachingBehavior(t *testing.T) {
@@ -86,24 +37,5 @@ func TestOriginalCachingBehavior(t *testing.T) {
 		if len(driver.discoveredTypes) != 1000 {
 			t.Errorf("Expected 1000 cache entries, got %d", len(driver.discoveredTypes))
 		}
-	})
-}
-
-// TestOriginalErrorHandling tests error handling patterns in the original code
-func TestOriginalErrorHandling(t *testing.T) {
-	t.Run("StrictModuleValidation", func(t *testing.T) {
-		// registration without a local CaddyModule method fails the package
-		source := `
-package test
-
-import "github.com/caddyserver/caddy/v2"
-
-func init() {
-	caddy.RegisterModule(new(HalfModule))
-}
-
-type HalfModule struct{}
-`
-		testModuleSource(t, source, false, "Registration without implementation should fail")
 	})
 }

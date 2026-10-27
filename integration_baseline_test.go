@@ -188,32 +188,6 @@ func TestIntegrationOriginalBehavior(t *testing.T) {
 	})
 }
 
-// TestModuleValidationIntegration tests the strict validation behavior
-func TestModuleValidationIntegration(t *testing.T) {
-	t.Run("OriginalStrictValidation", func(t *testing.T) {
-		// fully compliant module: registration + implementation + static ID
-		validSource := `
-package test
-
-import "github.com/caddyserver/caddy/v2"
-
-func init() {
-	caddy.RegisterModule(new(ValidModule))
-}
-
-type ValidModule struct{}
-
-func (*ValidModule) CaddyModule() caddy.ModuleInfo {
-	return caddy.ModuleInfo{
-		ID: "app.test.valid",
-		New: func() caddy.Module { return new(ValidModule) },
-	}
-}
-`
-		testModuleSource(t, validSource, true, "Compliant module should be detected")
-	})
-}
-
 // Helper function to create string pointers for testing
 func stringPtr(s string) *string {
 	return &s

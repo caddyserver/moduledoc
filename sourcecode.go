@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/token"
 	"go/types"
 	"log"
 	"strings"
@@ -221,9 +222,16 @@ func (ds *Driver) findModuleRegistration(pkg *packages.Package, fnCall *ast.Call
 
 	var caddyModuleIdent *ast.Ident
 
-	switch val := fnCall.Args[0].(type) {
+	arg := fnCall.Args[0]
+	if unary, ok := arg.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+		if literal, ok := unary.X.(*ast.CompositeLit); ok {
+			arg = literal
+		}
+	}
+
+	switch val := arg.(type) {
 	case *ast.CompositeLit:
-		// happens with `caddy.RegisterModule(Gizmo{})`
+		// happens with `caddy.RegisterModule(Gizmo{})` or `caddy.RegisterModule(&Gizmo{})`
 		ident, ok := val.Type.(*ast.Ident)
 		if !ok {
 			// e.g. a qualified type from another package; it will be
@@ -247,7 +255,7 @@ func (ds *Driver) findModuleRegistration(pkg *packages.Package, fnCall *ast.Call
 				registerModule, val.Fun)
 		}
 	default:
-		return nil, fmt.Errorf("unexpected argument to %s(): %#v - expect either composite literal or new()",
+		return nil, fmt.Errorf("unexpected argument to %s(): %#v - expect composite literal, address-of composite literal, or new()",
 			registerModule, val)
 	}
 
