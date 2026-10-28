@@ -15,10 +15,12 @@
 package moduledoc
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 
+	"go.uber.org/zap"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -69,7 +71,15 @@ func New(database Storage) *Driver {
 // LoadModulesFromImportingPackage returns the Caddy modules (plugins) registered when
 // package at its given version is imported.
 func (d *Driver) LoadModulesFromImportingPackage(packagePattern, version string) ([]CaddyModule, error) {
-	ws, err := d.openWorkspace()
+	return d.LoadModulesFromImportingPackageContext(context.Background(), packagePattern, version)
+}
+
+// LoadModulesFromImportingPackageContext is LoadModulesFromImportingPackage with
+// operation-scoped logging and cancellation of package loading.
+func (d *Driver) LoadModulesFromImportingPackageContext(ctx context.Context, packagePattern, version string) (modules []CaddyModule, err error) {
+	ctx, finish := logOperation(ctx, "load_modules", zap.String("target_package", packagePattern), zap.String("target_version", version))
+	defer func() { finish(err) }()
+	ws, err := d.openWorkspaceContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("opening workspace: %v", err)
 	}
@@ -104,7 +114,9 @@ func (d *Driver) LoadModulesFromImportingPackage(packagePattern, version string)
 }
 
 func (rb representationBuilder) loadModulesFromSinglePackage(pkg *packages.Package) ([]CaddyModule, error) {
-	caddyModuleIdents, err := rb.ws.driver.findCaddyModuleIdents(pkg)
+	ctx, finish := logOperation(rb.ws.ctx, "discover_modules", zap.String("package", pkg.PkgPath))
+	caddyModuleIdents, err := rb.ws.driver.findCaddyModuleIdentsContext(ctx, pkg)
+	finish(err)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +127,8 @@ func (rb representationBuilder) loadModulesFromSinglePackage(pkg *packages.Packa
 
 		rep, err := rb.buildRepresentation(caddyModuleObj.Type())
 		if err != nil {
+			contextLogger(ctx).Error("building module representation failed",
+				zap.String("module_id", caddyModName), zap.String("type", ident.Name), zap.Error(err))
 			return nil, err
 		}
 
@@ -127,8 +141,10 @@ func (rb representationBuilder) loadModulesFromSinglePackage(pkg *packages.Packa
 
 		err = rb.ws.driver.db.SetCaddyModuleName(pkg, typeName, caddyModName)
 		if err != nil {
+			contextLogger(ctx).Error("saving module name failed", zap.String("type", typeName), zap.String("module_id", caddyModName), zap.Error(err))
 			return nil, fmt.Errorf("saving Caddy module name to type: %v", err)
 		}
+		contextLogger(ctx).Debug("module processed", zap.String("type", typeName), zap.String("module_id", caddyModName))
 	}
 	return modules, nil
 }
@@ -137,7 +153,14 @@ func (rb representationBuilder) loadModulesFromSinglePackage(pkg *packages.Packa
 // type in the given package. This is generally used for bootstrapping the docs with
 // the initial/base Config type, within which all modules are used.
 func (d *Driver) AddType(packageName, typeName, version string) (*Value, error) {
-	ws, err := d.openWorkspace()
+	return d.AddTypeContext(context.Background(), packageName, typeName, version)
+}
+
+// AddTypeContext is AddType with operation-scoped logging and package loading cancellation.
+func (d *Driver) AddTypeContext(ctx context.Context, packageName, typeName, version string) (value *Value, err error) {
+	ctx, finish := logOperation(ctx, "add_type", zap.String("target_package", packageName), zap.String("target_type", typeName), zap.String("target_version", version))
+	defer func() { finish(err) }()
+	ws, err := d.openWorkspaceContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("opening workspace: %v", err)
 	}
@@ -168,8 +191,16 @@ func (d *Driver) AddType(packageName, typeName, version string) (*Value, error) 
 // LoadTypeByPath loads the type representation at the given config path.
 // It returns the exact value at that path and the nearest named type.
 func (d *Driver) LoadTypeByPath(configPath, version string) (exact, nearest *Value, err error) {
+	return d.LoadTypeByPathContext(context.Background(), configPath, version)
+}
+
+// LoadTypeByPathContext is LoadTypeByPath with operation-scoped logging.
+func (d *Driver) LoadTypeByPathContext(ctx context.Context, configPath, version string) (exact, nearest *Value, err error) {
+	ctx, finish := logOperation(ctx, "load_type_by_path", zap.String("config_path", configPath), zap.String("version", version))
+	defer func() { finish(err) }()
 	val, err := d.db.GetTypeByName(CaddyCorePackage, "Config", version)
 	if err != nil {
+		contextLogger(ctx).Error("loading root type failed", zap.Error(err))
 		return nil, nil, fmt.Errorf("getting start type: %v", err)
 	}
 	if val == nil {
@@ -177,10 +208,12 @@ func (d *Driver) LoadTypeByPath(configPath, version string) (exact, nearest *Val
 	}
 	exact, nearest, err = d.TraverseType(configPath, val)
 	if err != nil {
+		contextLogger(ctx).Error("traversing config path failed", zap.Error(err))
 		return nil, nil, fmt.Errorf("traversing type: %v", err)
 	}
 	exact, err = d.deepDereference(exact)
 	if err != nil {
+		contextLogger(ctx).Error("dereferencing config type failed", zap.Error(err))
 		return nil, nil, fmt.Errorf("dereferencing type path %s: %v", configPath, err)
 	}
 	return
@@ -278,14 +311,24 @@ func (d *Driver) TraverseType(path string, start *Value) (val, nearestType *Valu
 // with the given ID. It deeply dereferences the module(s) so that all type
 // information and docs are included in the result.
 func (d *Driver) LoadTypesByModuleID(moduleName string) ([]*Value, error) {
+	return d.LoadTypesByModuleIDContext(context.Background(), moduleName)
+}
+
+// LoadTypesByModuleIDContext is LoadTypesByModuleID with operation-scoped logging.
+func (d *Driver) LoadTypesByModuleIDContext(ctx context.Context, moduleName string) (values []*Value, err error) {
+	ctx, finish := logOperation(ctx, "load_module_types", zap.String("module_id", moduleName))
+	defer func() { finish(err) }()
 	vals, err := d.db.GetTypesByCaddyModuleID(moduleName)
 	if err != nil {
+		contextLogger(ctx).Error("loading module types from storage failed", zap.Error(err))
 		return nil, err
 	}
 	for i := range vals {
+		typeName := vals[i].TypeName
 		vals[i], err = d.deepDereference(vals[i])
 		if err != nil {
-			return nil, fmt.Errorf("dereferencing module type %s: %v", vals[i].TypeName, err)
+			contextLogger(ctx).Error("dereferencing module type failed", zap.String("type", typeName), zap.Error(err))
+			return nil, fmt.Errorf("dereferencing module type %s: %v", typeName, err)
 		}
 	}
 	return vals, nil

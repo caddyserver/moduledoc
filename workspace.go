@@ -15,18 +15,20 @@
 package moduledoc
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 
+	"go.uber.org/zap"
 	"golang.org/x/tools/go/packages"
 )
 
 type workspace struct {
+	ctx    context.Context
 	mu     *sync.RWMutex
 	dir    string
 	driver *Driver
@@ -58,22 +60,30 @@ const packagesLoadMode = packages.NeedName |
 	packages.NeedModule
 
 func (d *Driver) openWorkspace() (workspace, error) {
+	return d.openWorkspaceContext(context.Background())
+}
+
+func (d *Driver) openWorkspaceContext(ctx context.Context) (ws workspace, err error) {
+	parentCtx := operationContext(ctx)
+	ctx, finish := logOperation(ctx, "open_workspace")
+	defer func() { finish(err) }()
 	tempDir, err := ioutil.TempDir("", "caddy_docsys_")
 	if err != nil {
 		return workspace{}, err
 	}
 
-	cmd := exec.Command("go", "mod", "init", "temp/docsys")
+	cmd := exec.CommandContext(ctx, "go", "mod", "init", "temp/docsys")
 	cmd.Dir = tempDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	err = cmd.Run()
+	err = runGoCommand(ctx, cmd)
 	if err != nil {
-		os.RemoveAll(tempDir)
+		if cleanupErr := os.RemoveAll(tempDir); cleanupErr != nil {
+			contextLogger(ctx).Error("removing failed workspace", zap.Error(cleanupErr))
+		}
 		return workspace{}, fmt.Errorf("exec %v: %v", cmd.Args, err)
 	}
 
 	return workspace{
+		ctx:             parentCtx,
 		mu:              new(sync.RWMutex),
 		dir:             tempDir,
 		driver:          d,
@@ -84,7 +94,11 @@ func (d *Driver) openWorkspace() (workspace, error) {
 }
 
 func (ws workspace) Close() error {
-	return os.RemoveAll(ws.dir)
+	err := os.RemoveAll(ws.dir)
+	if err != nil {
+		contextLogger(ws.ctx).Error("removing workspace failed", zap.Error(err))
+	}
+	return err
 }
 
 // getPackage parses the package at packagePattern. This method is
@@ -93,7 +107,9 @@ func (ws workspace) Close() error {
 // big one, ws.parsedPackages, used to be in the Driver which is
 // long-lived, but this used too much memory in the long run, so
 // now caching is ephemeral, per-workspace)
-func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Package, error) {
+func (ws *workspace) getPackages(packagePattern, version string) (loaded []*packages.Package, err error) {
+	ctx, finish := logOperation(ws.ctx, "load_packages", zap.String("package_pattern", packagePattern), zap.String("requested_version", version))
+	defer func() { finish(err) }()
 	if packagePattern == "" {
 		return nil, fmt.Errorf("package path is empty")
 	}
@@ -105,6 +121,7 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 
 	// if we've already processed this pattern, reuse it
 	if cached := ws.cachedPackages(pkgKey); len(cached) > 0 {
+		contextLogger(ctx).Debug("package cache hit", zap.Int("package_count", len(cached)))
 		return cached, nil
 	}
 
@@ -113,17 +130,15 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	if !ws.alreadyGotModule(packagePattern) {
-		cmd := exec.Command("go", "get", pkgKey)
+		cmd := exec.CommandContext(ctx, "go", "get", pkgKey)
 		cmd.Dir = ws.dir
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
+		err := runGoCommand(ctx, cmd)
 		if err != nil {
 			return nil, fmt.Errorf("exec %v: %v", cmd.Args, err)
 		}
 
 		// remember that we 'go got' this package's module, so we don't have to do it again
-		pkgInfo, err := runGoList(ws.dir, packagePattern)
+		pkgInfo, err := runGoListContext(ctx, ws.dir, packagePattern)
 		if err != nil {
 			return nil, fmt.Errorf("listing package to get module: %v", err)
 		}
@@ -132,8 +147,9 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 
 	// finally, load and parse the package
 	cfg := &packages.Config{
-		Dir:  ws.dir,
-		Mode: packagesLoadMode,
+		Context: ctx,
+		Dir:     ws.dir,
+		Mode:    packagesLoadMode,
 
 		// on Linux, leaving CGO_ENABLED to the default value of 1 would
 		// cause an error: "could not import C (no metadata for C)", but
@@ -167,19 +183,18 @@ func (ws *workspace) getPackages(packagePattern, version string) ([]*packages.Pa
 		ws.parsedPackages[packageKey(pkg)] = pkg
 
 		// check for errors
-		for i, e := range pkg.Errors {
-			var prefix string
-			if i > 0 {
-				prefix = "\n"
-			}
-			log.Printf("[WARNING] Load '%s': found error while visiting package on import graph %s: %v - skipping",
-				packagePattern, prefix, e)
+		for _, e := range pkg.Errors {
+			contextLogger(ctx).Warn("package diagnostic",
+				zap.String("imported_package", pkg.PkgPath),
+				zap.String("position", e.Pos), zap.String("diagnostic", e.Msg),
+				zap.String("kind", packageErrorKindName(e.Kind)))
 		}
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	contextLogger(ctx).Debug("packages loaded", zap.Int("package_count", len(pkgs)))
 	return pkgs, nil
 }
 

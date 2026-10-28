@@ -15,14 +15,15 @@
 package moduledoc
 
 import (
+	"context"
 	"fmt"
 	"go/ast"
 	"go/constant"
 	"go/token"
 	"go/types"
-	"log"
 	"strings"
 
+	"go.uber.org/zap"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -37,6 +38,10 @@ import (
 // This function returns a map of type identifiers from the AST to their associated
 // Caddy module IDs.
 func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]string, error) {
+	return ds.findCaddyModuleIdentsContext(context.Background(), pkg)
+}
+
+func (ds *Driver) findCaddyModuleIdentsContext(ctx context.Context, pkg *packages.Package) (map[*ast.Ident]string, error) {
 	caddyModRegs := make(map[string]*ast.Ident)
 	caddyModImpls := make(map[string]*ast.Ident)
 	caddyModIDs := make(map[string]string)
@@ -49,7 +54,7 @@ func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]s
 			case *ast.CallExpr:
 				// function call; look for module registration which is
 				// a call to caddy.RegisterModule()
-				moduleReg, err := ds.findModuleRegistration(pkg, val)
+				moduleReg, err := ds.findModuleRegistrationContext(ctx, pkg, val)
 				if err != nil {
 					inspectErr = err
 					return false
@@ -122,7 +127,9 @@ func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]s
 							caddyModName = strings.Trim(lit.Value, `"`)
 							break
 						}
-						log.Printf("[WARNING] CaddyModule() method in %s returns ModuleInfo with unsupported ID value (must be constant); skipping: %#v", file.Name, kv.Value)
+						contextLogger(ctx).Warn("skipping module with runtime-computed ID",
+							zap.String("package", pkg.PkgPath),
+							zap.String("type", currentCaddyModuleFunc.Name))
 						delete(caddyModRegs, currentCaddyModuleFunc.Name)
 						delete(caddyModImpls, currentCaddyModuleFunc.Name)
 						currentCaddyModuleFunc = nil
@@ -151,18 +158,18 @@ func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]s
 	// not registered, and vice-versa
 	for key, val := range caddyModRegs {
 		if _, ok := caddyModImpls[key]; !ok {
-			return nil, fmt.Errorf("caddy module gets registered but does not implement caddy.Module interface: %#v", val)
+			return nil, fmt.Errorf("package %s: type %s is registered but does not implement caddy.Module", pkg.PkgPath, val.Name)
 		}
 		if _, ok := caddyModIDs[key]; !ok {
-			return nil, fmt.Errorf("caddy module gets registered, but we could not find its module name: %#v", val)
+			return nil, fmt.Errorf("package %s: registered type %s has no module ID", pkg.PkgPath, val.Name)
 		}
 	}
 	for key, val := range caddyModImpls {
 		if _, ok := caddyModRegs[key]; !ok {
-			return nil, fmt.Errorf("type has CaddyModule method, but does not get registered via caddy.%s(): %#v", registerModule, val)
+			return nil, fmt.Errorf("package %s: type %s has CaddyModule method, but does not get registered via caddy.%s()", pkg.PkgPath, val.Name, registerModule)
 		}
 		if _, ok := caddyModIDs[key]; !ok {
-			return nil, fmt.Errorf("type has CaddyModule method, but we could not find its module name: %#v", val)
+			return nil, fmt.Errorf("package %s: type %s has CaddyModule method but no module ID", pkg.PkgPath, val.Name)
 		}
 	}
 
@@ -180,6 +187,10 @@ func (ds *Driver) findCaddyModuleIdents(pkg *packages.Package) (map[*ast.Ident]s
 // that is registered using fnCall. If fnCall is not a call to
 // caddy.RegisterModule, nil is returned.
 func (ds *Driver) findModuleRegistration(pkg *packages.Package, fnCall *ast.CallExpr) (*ast.Ident, error) {
+	return ds.findModuleRegistrationContext(context.Background(), pkg, fnCall)
+}
+
+func (ds *Driver) findModuleRegistrationContext(ctx context.Context, pkg *packages.Package, fnCall *ast.CallExpr) (*ast.Ident, error) {
 	// this could be any function call; make sure it's
 	// actually a call to register a module
 	switch fn := fnCall.Fun.(type) {
@@ -236,7 +247,8 @@ func (ds *Driver) findModuleRegistration(pkg *packages.Package, fnCall *ast.Call
 		if !ok {
 			// e.g. a qualified type from another package; it will be
 			// documented from its home package, so skip it here
-			log.Printf("[WARNING] %s() argument type is not declared in this package; skipping: %#v", registerModule, val.Type)
+			contextLogger(ctx).Warn("skipping registration of non-local type",
+				zap.String("package", pkg.PkgPath), zap.String("type", types.ExprString(val.Type)))
 			return nil, nil
 		}
 		caddyModuleIdent = ident
@@ -246,7 +258,8 @@ func (ds *Driver) findModuleRegistration(pkg *packages.Package, fnCall *ast.Call
 		if funIdent, ok := val.Fun.(*ast.Ident); ok && funIdent.Name == "new" {
 			ident, ok := val.Args[0].(*ast.Ident)
 			if !ok {
-				log.Printf("[WARNING] %s() argument type is not declared in this package; skipping: %#v", registerModule, val.Args[0])
+				contextLogger(ctx).Warn("skipping registration of non-local type",
+					zap.String("package", pkg.PkgPath), zap.String("type", types.ExprString(val.Args[0])))
 				return nil, nil
 			}
 			caddyModuleIdent = ident

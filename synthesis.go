@@ -15,6 +15,7 @@
 package moduledoc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -23,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
 	"golang.org/x/tools/go/ast/astutil"
 )
 
@@ -177,7 +179,14 @@ type representationBuilder struct {
 // buildRepresentation returns a structured representation of
 // the given type, which we can use to put into our database
 // and thus use to render documentation for the type.
-func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) (*Value, error) {
+func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) (value *Value, err error) {
+	logger := contextLogger(rb.ws.ctx).With(zap.String("type", caddyModuleType.String()))
+	start := time.Now()
+	defer func() {
+		if err != nil {
+			logger.Error("building type representation failed", zap.Error(err), zap.Duration("duration", time.Since(start)))
+		}
+	}()
 	var rep *Value
 
 	// Go 1.23+ materialises type-alias declarations as *types.Alias; unwrap so the switches below match on the target.
@@ -229,6 +238,7 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 		packagePath, typeName := typePackageAndName(caddyModuleType)
 		discoveredType, err := rb.ws.driver.db.GetTypeByName(packagePath, typeName, typeVersion)
 		if err != nil {
+			logger.Error("looking up type in storage failed", zap.String("version", typeVersion), zap.Error(err))
 			return nil, err
 		}
 		if discoveredType != nil {
@@ -340,8 +350,10 @@ func (rb representationBuilder) buildRepresentation(caddyModuleType types.Type) 
 		stored = true
 		err = rb.ws.driver.db.StoreType(packagePath, typeName, typeVersion, rep)
 		if err != nil {
+			logger.Error("storing type representation failed", zap.String("version", typeVersion), zap.Error(err))
 			return nil, err
 		}
+		logger.Debug("type representation stored", zap.String("version", typeVersion), zap.Duration("duration", time.Since(start)))
 
 		return &Value{SameAs: sameAs}, nil
 
@@ -438,7 +450,7 @@ func (rb *representationBuilder) getDepVersion(typ *types.Named) (string, error)
 	}
 
 	// get the version of the module in use for this package in our workspace
-	pkgInfo, err := runGoList(rb.ws.dir, fieldTypePackageName)
+	pkgInfo, err := runGoListContext(rb.ws.ctx, rb.ws.dir, fieldTypePackageName)
 	if err != nil {
 		return "", err
 	}
@@ -455,8 +467,14 @@ func (rb *representationBuilder) getDepVersion(typ *types.Named) (string, error)
 }
 
 func runGoList(workspaceDir, pkg string) (goListOutput, error) {
+	return runGoListContext(context.Background(), workspaceDir, pkg)
+}
+
+func runGoListContext(ctx context.Context, workspaceDir, pkg string) (info goListOutput, err error) {
+	ctx, finish := logOperation(ctx, "resolve_module_version", zap.String("import_path", pkg))
+	defer func() { finish(err) }()
 	pkg = strings.TrimSuffix(pkg, "/...")
-	cmd := exec.Command("go", "list", "-json", pkg)
+	cmd := exec.CommandContext(operationContext(ctx), "go", "list", "-json", pkg)
 	cmd.Dir = workspaceDir
 	results, err := cmd.Output()
 	if err != nil {
