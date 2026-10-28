@@ -56,8 +56,7 @@ type IncompleteModule struct{}
 		testModuleSource(t, source, false, "Module without implementation should fail")
 	})
 
-	t.Run("NonStaticModuleID", func(t *testing.T) {
-		// Test computed module ID that should be skipped
+	t.Run("ConstantModuleID", func(t *testing.T) {
 		source := `
 package test
 
@@ -77,27 +76,103 @@ func (*ComputedModule) CaddyModule() caddy.ModuleInfo {
 }
 `
 
-		// This should be skipped (not fail, but not detected) in original implementation
-		testModuleSource(t, source, false, "Computed module ID should be skipped")
+		testModuleSource(t, source, true, "Constant module ID should be detected")
+	})
+
+	t.Run("NonStaticModuleID", func(t *testing.T) {
+		source := `
+package test
+
+import "github.com/caddyserver/caddy/v2"
+
+func init() {
+	caddy.RegisterModule(new(ComputedModule))
+}
+
+type ComputedModule struct{}
+
+var moduleID = "computed.dynamic"
+
+func (*ComputedModule) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID: caddy.ModuleID(moduleID),
+		New: func() caddy.Module { return new(ComputedModule) },
+	}
+}
+`
+
+		testModuleSource(t, source, false, "Runtime-computed module ID should be skipped")
+	})
+
+	t.Run("constModuleID", func(t *testing.T) {
+		source := `
+package test
+
+import "github.com/caddyserver/caddy/v2"
+
+func init() {
+	caddy.RegisterModule(new(ConstIDModule))
+}
+
+type ConstIDModule struct{}
+
+const moduleID = "const.mod"
+
+func (*ConstIDModule) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID: caddy.ModuleID(moduleID),
+		New: func() caddy.Module { return new(ConstIDModule) },
+	}
+}
+`
+
+		testModuleSource(t, source, true, "const module ID should be successful")
 	})
 }
 
 // testModuleSource is a helper that tests module detection on source code
 func testModuleSource(t *testing.T, source string, expectSuccess bool, message string) {
+	t.Helper()
 	fset := token.NewFileSet()
+	// Accept any registration argument so invalid module fixtures reach validation.
+	caddyFile, err := parser.ParseFile(fset, "caddy.go", `package caddy
+type ModuleID string
+type Module interface { CaddyModule() ModuleInfo }
+type ModuleInfo struct {
+	ID ModuleID
+	New func() Module
+}
+func RegisterModule(any) {}
+`, 0)
+	if err != nil {
+		t.Fatalf("Failed to parse Caddy stub: %v", err)
+	}
+	caddyPkg, err := new(types.Config).Check(caddyCorePackagePath, fset, []*ast.File{caddyFile}, nil)
+	if err != nil {
+		t.Fatalf("Failed to type-check Caddy stub: %v", err)
+	}
+
 	file, err := parser.ParseFile(fset, "test.go", source, parser.ParseComments)
 	if err != nil {
 		t.Fatalf("Failed to parse source: %v", err)
 	}
 
-	// Create a minimal package for testing
+	info := &types.Info{
+		Types: make(map[ast.Expr]types.TypeAndValue),
+		Uses:  make(map[*ast.Ident]types.Object),
+		Defs:  make(map[*ast.Ident]types.Object),
+	}
+	cfg := types.Config{Importer: registrationTestImporter{caddyPkg}}
+	typesPkg, err := cfg.Check("test", fset, []*ast.File{file}, info)
+	if err != nil {
+		t.Fatalf("Failed to type-check source: %v", err)
+	}
+
 	pkg := &packages.Package{
-		Name:   "test",
-		Syntax: []*ast.File{file},
-		TypesInfo: &types.Info{
-			Uses: make(map[*ast.Ident]types.Object),
-			Defs: make(map[*ast.Ident]types.Object),
-		},
+		Name:      "test",
+		Syntax:    []*ast.File{file},
+		Types:     typesPkg,
+		TypesInfo: info,
 	}
 
 	driver := New(nil)
